@@ -1,23 +1,12 @@
-"""Flask entrypoint for the TMS adapter.
-
-Phase 0: only /health exists, so the service is deployable from day one. The
-load tools (search_loads / get_load / book_load / evaluate_offer) land in
-Phase 3, once the socket client (Phase 2) is in place.
-
-Flask's synchronous model is a deliberate fit: the adapter's job is to wrap the
-TMS's blocking TCP socket calls in HTTP, and a plain request -> open socket ->
-respond flow reads top to bottom with no async machinery.
+"""Entrypoint / front door. Gunicorn and the dev server import `app` from here
+(see the Dockerfile). This file holds no logic — routes live in adapter.routes,
+and everything they call lives in the layers beneath. Building `app` opens no
+connection; the TMS client only dials when a request arrives.
 """
-from flask import Flask, jsonify
+from adapter.app import create_app
 
-app = Flask(__name__)
-
-
-@app.get("/health")
-def health():
-    return jsonify(status="ok")
+app = create_app()
 
 
 if __name__ == "__main__":
-    # Local dev server only. Docker runs this under gunicorn (see Dockerfile).
     app.run(host="0.0.0.0", port=8000)
