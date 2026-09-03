@@ -1,41 +1,45 @@
 """Negotiation policy — the ceiling logic that never leaves the server.
 
-`evaluate_offer` is a pure function. It takes the carrier's counter, the round,
-the posted loadboard rate, and the hidden ceiling (MAX_BUY), and returns only
-the agent's next move: accept at a number, counter with a number, or reject.
+Anchored entirely on each load's own MAX_BUY (the hard ceiling), which the real
+TMS data shows sits BELOW the posted loadboard rate. The agent opens below the
+ceiling and concedes upward toward it across at most three rounds, never crossing
+it and never speaking it:
 
-Two invariants make it safe to expose as a tool:
-  * It never returns a rate above the ceiling.
-  * It never returns the ceiling itself as a spoken counter — the escalating
-    counters for rounds 1 and 2 are strictly below MAX_BUY, and round 3 only ever
-    accepts or rejects. So MAX_BUY is used but never disclosed.
+  * opening offer (round 0)   = MAX_BUY * open_fraction   (below the ceiling)
+  * round 1-2 counters        strictly below the ceiling
+  * round 3                   accept at/under the ceiling, otherwise reject
 
-The broker PAYS the carrier, so the carrier pushes the rate UP and the agent
-holds the line at MAX_BUY. Offers step from the loadboard rate toward the ceiling
-across at most three rounds.
+So MAX_BUY drives every decision but is never returned to the agent. The loadboard
+rate is deliberately NOT used as the anchor — anchoring on it would overpay,
+because the ceiling is below it.
 """
 from __future__ import annotations
 
+DEFAULT_OPEN_FRACTION = 0.90
 
-def evaluate_offer(carrier_counter: int, round_number: int,
-                   loadboard_rate: int, max_buy: int) -> dict:
-    """Return {'action': 'accept'|'counter'|'reject', 'rate': int|None}."""
-    carrier_counter = int(carrier_counter)
-    loadboard_rate = int(loadboard_rate)
+
+def evaluate_offer(max_buy, round_number, carrier_counter=None, *,
+                   open_fraction: float = DEFAULT_OPEN_FRACTION) -> dict:
+    """Return the agent's next move.
+
+    round 0 / no carrier_counter -> {'action': 'offer',  'rate': opening}
+    a carrier counter            -> {'action': 'accept'|'counter'|'reject', 'rate': int|None}
+    """
     max_buy = int(max_buy)
-    if max_buy < loadboard_rate:                 # defensive: ceiling below posted
-        max_buy = loadboard_rate
-    round_number = max(1, min(int(round_number), 3))
+    opening = round(max_buy * open_fraction)
 
-    # Our escalating offer for this round; reaches exactly the ceiling by round 3.
-    our_offer = round(loadboard_rate + (max_buy - loadboard_rate) * round_number / 3)
+    if carrier_counter is None or int(round_number) <= 0:
+        return {"action": "offer", "rate": opening}
+
+    round_number = max(1, min(int(round_number), 3))
+    carrier_counter = int(carrier_counter)
+
+    # Escalating offer that reaches exactly the ceiling by the final round.
+    our_offer = round(opening + (max_buy - opening) * round_number / 3)
     our_offer = min(our_offer, max_buy)
 
     if carrier_counter <= our_offer:
-        # Carrier's ask is within what we'll pay this round — take their number.
         return {"action": "accept", "rate": carrier_counter}
     if round_number >= 3:
-        # Final round, carrier still above the ceiling — we cannot meet them.
         return {"action": "reject", "rate": None}
-    # Counter with our stepped offer (strictly below the ceiling for rounds 1-2).
     return {"action": "counter", "rate": int(our_offer)}

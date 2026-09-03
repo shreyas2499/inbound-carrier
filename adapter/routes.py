@@ -1,10 +1,11 @@
 """HTTP routes — thin gateways translating HTTP <-> the TMS client and the
-negotiation policy. No business logic lives here beyond request/response
-plumbing: the client handles TCP + faults, the codec handles the wire, the
-negotiation module owns the ceiling math, the serializer owns the public shape.
+negotiation policy. No business logic beyond request/response plumbing: the
+client handles TCP + faults, the codec handles the wire, the negotiation module
+owns the ceiling math, the serializer owns the public shape, the cache spares the
+flaky TMS during a single call.
 
-Two guarantees enforced at this layer: MAX_BUY never leaves the server, and
-every /tools/* endpoint requires the adapter API key.
+Two guarantees enforced at this layer: MAX_BUY never leaves the server, and every
+/tools/* endpoint requires the adapter API key.
 """
 from __future__ import annotations
 
@@ -21,6 +22,23 @@ bp = Blueprint("tools", __name__)
 
 def _client():
     return current_app.config["TMS_CLIENT"]
+
+
+def _cache():
+    return current_app.config["LOAD_CACHE"]
+
+
+def _load_record(load_id: str):
+    """Full TMS record for a load, served from the short-lived cache when warm.
+    Used by read paths (get_load, evaluate_offer). Booking never uses this."""
+    cache = _cache()
+    cached = cache.get(load_id)
+    if cached is not None:
+        return cached
+    record = _client().load_get(load_id)
+    if record is not None:
+        cache.set(load_id, record)
+    return record
 
 
 @bp.get("/health")
@@ -52,7 +70,7 @@ def get_load():
     if not load_id:
         return jsonify(error="missing_field", message="load_id required"), 400
     try:
-        load = _client().load_get(load_id)
+        load = _load_record(load_id)
     except TmsError as e:
         return jsonify(error=e.code, message=e.message), 404 if e.code == "UNKNOWN_LOAD" else 502
     except TmsUnavailable as e:
@@ -66,15 +84,17 @@ def get_load():
 @require_api_key
 def evaluate_offer():
     body = request.get_json(silent=True) or {}
+    load_id = body.get("load_id")
+    if not load_id:
+        return jsonify(error="missing_field", message="load_id required"), 400
+    round_number = int(body.get("round", 0) or 0)
+    raw_offer = body.get("carrier_offer")
     try:
-        load_id = body["load_id"]
-        carrier_offer = int(body["carrier_offer"])
-        round_number = int(body.get("round", 1))
-    except (KeyError, TypeError, ValueError):
-        return jsonify(error="missing_field",
-                       message="load_id, carrier_offer, round required"), 400
+        carrier_offer = None if raw_offer in (None, "") else int(raw_offer)
+    except (TypeError, ValueError):
+        return jsonify(error="missing_field", message="carrier_offer must be a number"), 400
     try:
-        load = _client().load_get(load_id)
+        load = _load_record(load_id)
     except TmsError as e:
         return jsonify(error=e.code, message=e.message), 404
     except TmsUnavailable as e:
@@ -82,10 +102,9 @@ def evaluate_offer():
     if not load:
         return jsonify(error="UNKNOWN_LOAD"), 404
     max_buy = load.get("MAX_BUY")
-    loadboard = load.get("RATE")
-    if max_buy is None or loadboard is None:
+    if max_buy is None:
         return jsonify(error="no_ceiling", message="ceiling not available for this token"), 409
-    decision = evaluate_offer_policy(carrier_offer, round_number, loadboard, max_buy)
+    decision = evaluate_offer_policy(max_buy, round_number, carrier_offer)
     # The response carries ONLY the next move — never MAX_BUY.
     return jsonify(**decision)
 
@@ -103,15 +122,17 @@ def book_load():
                        message="load_id, mc_number, agreed_rate required"), 400
     try:
         rec = _client().load_book(load_id, mc_number, agreed_rate)
+        _cache().invalidate(load_id)  # availability changed
         return jsonify(status="booked", booking_ref=rec.get("BOOKING_REF"))
     except TmsError as e:
         return jsonify(error=e.code, message=e.message), 409
     except BookAmbiguousError:
-        # A timed-out book may have committed. Confirm before deciding.
+        # A timed-out book may have committed. Confirm live (bypass cache).
         try:
             load = _client().load_get(load_id)
         except Exception:
             load = None
+        _cache().invalidate(load_id)
         if load and load.get("STATUS") == "BOOKED":
             return jsonify(status="booked", booking_ref=load.get("BOOKING_REF"),
                            note="confirmed after ambiguous booking")

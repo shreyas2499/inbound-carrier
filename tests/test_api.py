@@ -120,3 +120,31 @@ def test_book_ambiguous_is_confirmed_via_get(mocks):
     body = r.get_json()
     assert body["status"] == "booked"
     assert "confirmed" in body.get("note", "")
+
+
+def test_evaluate_offer_opening_returns_offer_below_ceiling(mocks):
+    c = _make(_route_handler, mocks)
+    r = c.post("/tools/evaluate_offer", json={"load_id": "LD0000045821", "round": 0},
+               headers={"X-API-Key": API_KEY})
+    body = r.get_json()
+    assert r.status_code == 200
+    assert body["action"] == "offer"
+    assert body["rate"] < 2500                    # opens below the (2500) ceiling
+    assert "MAX_BUY" not in body and "max_buy" not in body
+
+
+def test_evaluate_offer_caches_load_within_call(mocks):
+    calls = {"get": 0}
+
+    def handler(req):
+        if "CMD:LOAD_GET" in req:
+            calls["get"] += 1
+        return (GET_WITH_CEILING, 0)
+
+    c = _make(handler, mocks)
+    for _ in range(2):
+        r = c.post("/tools/evaluate_offer",
+                   json={"load_id": "LD0000045821", "carrier_offer": 2000, "round": 1},
+                   headers={"X-API-Key": API_KEY})
+        assert r.status_code == 200
+    assert calls["get"] == 1                       # 2nd round served from cache, not the TMS
