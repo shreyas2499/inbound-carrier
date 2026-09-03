@@ -1,8 +1,8 @@
-"""HTTP routes — thin gateways translating HTTP <-> the TMS client and the
-negotiation policy. No business logic beyond request/response plumbing: the
-client handles TCP + faults, the codec handles the wire, the negotiation module
-owns the ceiling math, the serializer owns the public shape, the cache spares the
-flaky TMS during a single call.
+"""HTTP routes — thin gateways translating HTTP <-> the TMS client, the FMCSA
+lookup, and the negotiation policy. No business logic beyond request/response
+plumbing: the client handles TCP + faults, the codec handles the wire, fmcsa
+handles authority, negotiation owns the ceiling math, the serializer owns the
+public shape, the cache spares the flaky TMS during a single call.
 
 Two guarantees enforced at this layer: MAX_BUY never leaves the server, and every
 /tools/* endpoint requires the adapter API key.
@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from flask import Blueprint, current_app, jsonify, request
 
+from adapter import fmcsa
 from adapter.auth import require_api_key
 from adapter.negotiation import evaluate_offer as evaluate_offer_policy
 from adapter.serializers import public_load
@@ -22,6 +23,10 @@ bp = Blueprint("tools", __name__)
 
 def _client():
     return current_app.config["TMS_CLIENT"]
+
+
+def _config():
+    return current_app.config["ADAPTER_CONFIG"]
 
 
 def _cache():
@@ -44,6 +49,22 @@ def _load_record(load_id: str):
 @bp.get("/health")
 def health():
     return jsonify(status="ok")
+
+
+@bp.post("/tools/verify_carrier")
+@require_api_key
+def verify_carrier():
+    body = request.get_json(silent=True) or {}
+    mc = body.get("mc_number") or body.get("MC_NUM") or body.get("mc")
+    if not mc:
+        return jsonify(error="missing_field", message="mc_number required"), 400
+    try:
+        result = fmcsa.verify_mc(mc, _config().fmcsa_api_key)
+    except fmcsa.FmcsaUnavailable as e:
+        return jsonify(error="fmcsa_unavailable", message=str(e)), 503
+    # Always 200 on a completed lookup (found or not) so the workflow branches on
+    # `eligible` rather than on HTTP status. Only a real API failure is a 503.
+    return jsonify(**result)
 
 
 @bp.post("/tools/search_loads")

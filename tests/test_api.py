@@ -148,3 +148,31 @@ def test_evaluate_offer_caches_load_within_call(mocks):
                    headers={"X-API-Key": API_KEY})
         assert r.status_code == 200
     assert calls["get"] == 1                       # 2nd round served from cache, not the TMS
+
+
+def test_verify_carrier_endpoint_eligible(mocks, monkeypatch):
+    from adapter import fmcsa
+
+    class R:
+        status_code = 200
+        def raise_for_status(self): pass
+        def json(self):
+            return {"content": [{"carrier": {"allowedToOperate": "Y", "outOfService": "N",
+                                             "legalName": "ACME TRUCKING", "dotNumber": 1,
+                                             "telephone": "5551234567"}}]}
+
+    monkeypatch.setattr(fmcsa.requests, "get", lambda *a, **k: R())
+    c = _make(_route_handler, mocks)
+    r = c.post("/tools/verify_carrier", json={"mc_number": "872144"},
+               headers={"X-API-Key": API_KEY})
+    body = r.get_json()
+    assert r.status_code == 200
+    assert body["eligible"] is True
+    assert body["legal_name"] == "ACME TRUCKING"
+    assert body["phone"] == "5551234567"
+
+
+def test_verify_carrier_requires_mc(mocks):
+    c = _make(_route_handler, mocks)
+    r = c.post("/tools/verify_carrier", json={}, headers={"X-API-Key": API_KEY})
+    assert r.status_code == 400
