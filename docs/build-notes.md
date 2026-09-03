@@ -22,3 +22,17 @@
 - **Opening pitch vs. posted rate.** Agent opens ~10% under the ceiling, which is
   below the posted loadboard rate; make sure the script frames that naturally so
   the carrier isn't startled by the drop from the posted number.
+
+## OTP — contact-of-record source (added, still parked)
+- FMCSA is an AUTHORITY source, not a CONTACT source. The `telephone` field is
+  frequently `null` (confirmed live: OUZA TRANSPORTATION INC / MC 872144 / DOT
+  2514144 returned phone=null while eligible=true). So the FMCSA phone CANNOT be
+  the sole OTP destination.
+- In a real brokerage the OTP contact comes from the broker's OWN carrier
+  onboarding records (already-verified phone/email), not from FMCSA. The sandbox
+  TMS does not expose carrier contact info.
+- Decision to make when OTP is unparked: where does the contact-of-record come
+  from? FMCSA phone is a "use-if-present" fallback only, never the only source.
+- Richer FMCSA data (by DOT number) is available if useful later:
+  /carriers/{dot}/authority, /basics, /cargo-carried, /operation-classification,
+  /oos, /docket-numbers.
