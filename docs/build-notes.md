@@ -36,3 +36,29 @@
 - Richer FMCSA data (by DOT number) is available if useful later:
   /carriers/{dot}/authority, /basics, /cargo-carried, /operation-classification,
   /oos, /docket-numbers.
+
+## Twin data layer — three tables (Phase 6)
+Twin = HappyRobot's managed PostgreSQL (the native data layer). Full schema in
+`adapter/twin_models.py` (reference only, not imported). Column types:
+int8/int4/float8/float4/text/boolean/timestamp/uuid/jsonb.
+
+- **call_records** — 1 row per call, writer = WORKFLOW (Write-to-Twin node).
+  Drives the KPI dashboard + ops per-call trail. Stores `margin_vs_ceiling`,
+  NEVER `max_buy`.
+- **event_log** — 1 row per API/tool call, writer = ADAPTER (fire-and-forget).
+  Raw audit log: FULL upstream request+response as `jsonb`, verbatim (incl.
+  `max_buy` on get_load). INTERNAL only, never carrier/agent-facing. Secrets
+  (TMS AUTH token, FMCSA webKey) stripped from the logged request.
+- **carriers** — 1 row per carrier, UPSERT on `mc_number`, writer = ADAPTER.
+  Carrier history/dedup + the home for the OTP contact-of-record (`email` col).
+- **negotiation_rounds** — OPTIONAL, only if per-round analytics wanted.
+
+Implications:
+- The adapter now legitimately writes to Twin (event_log + carriers) via the Twin
+  REST API — needs a HappyRobot API key + Twin gateway URL in `.env`; writes MUST
+  be async / non-blocking (a logging failure never breaks a tool call).
+- Northstar KPIs = SQL Views over call_records. Ops app reads Twin via the
+  injected `NEXT_PUBLIC_TWIN_GATEWAY`.
+- Do NOT add a `loads` table: load availability is the TMS's live truth (a stored
+  copy goes stale / pitches booked loads), and fetched loads are already in
+  event_log (tool='get_load'/'search_loads').

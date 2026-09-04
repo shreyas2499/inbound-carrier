@@ -8,6 +8,7 @@ from adapter.cache import TTLCache
 from adapter.config import Config
 from adapter.routes import bp
 from adapter.tms_client import TmsClient
+from adapter.twin_helper import client_from_config
 
 
 def create_app(client: TmsClient | None = None, config: Config | None = None) -> Flask:
@@ -16,5 +17,7 @@ def create_app(client: TmsClient | None = None, config: Config | None = None) ->
     app.config["ADAPTER_CONFIG"] = config
     app.config["TMS_CLIENT"] = client or config.make_client()
     app.config["LOAD_CACHE"] = TTLCache(ttl_seconds=90)
+    # Idle until HAPPYROBOT_API_KEY is set — every twin_helper call no-ops when off.
+    app.config["TWIN_CLIENT"] = client_from_config(config)
     app.register_blueprint(bp)
     return app

@@ -29,6 +29,12 @@ class Config:
     adapter_api_key: str
     tms_timeout: float
     tms_max_retries: int
+    # --- HappyRobot Twin (managed Postgres via REST) ------------------------
+    # Optional: when twin_api_key is blank, every twin_helper call is a no-op,
+    # so the adapter runs perfectly fine before these creds are ever fetched.
+    twin_api_key: str
+    twin_api_base: str
+    twin_timeout: float
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -40,6 +46,11 @@ class Config:
             adapter_api_key=os.environ.get("ADAPTER_API_KEY", ""),
             tms_timeout=float(os.environ.get("TMS_CLIENT_TIMEOUT_SECONDS", "8")),
             tms_max_retries=int(os.environ.get("TMS_MAX_RETRIES", "2")),
+            twin_api_key=os.environ.get("HAPPYROBOT_API_KEY", ""),
+            twin_api_base=os.environ.get(
+                "HAPPYROBOT_API_BASE", "https://platform.happyrobot.ai/api/v2"
+            ).rstrip("/"),
+            twin_timeout=float(os.environ.get("TWIN_TIMEOUT_SECONDS", "6")),
         )
 
     def make_client(self) -> TmsClient:
