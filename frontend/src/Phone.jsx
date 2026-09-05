@@ -63,12 +63,6 @@ export default function Phone({ open, mc, phase, code, secsLeft, ttl, onClose })
           </div>
 
           <div className={s.notifArea}>
-            {phase === 'waiting' && (
-              <div className={s.waitPill}>
-                <span className={s.miniSpin} /> Waiting for verification code…
-              </div>
-            )}
-
             {phase === 'code' && (
               <div className={s.notif}>
                 <div className={s.nHead}>
