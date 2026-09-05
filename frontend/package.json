@@ -1,0 +1,22 @@
+{
+  "name": "carrier-device-ui",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Carrier verification 'device' — a demo stand-in for the phone where a carrier receives its one-time code. Polls the adapter's /otp/peek.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview --host --port ${PORT:-4173}",
+    "start": "vite preview --host --port ${PORT:-4173}"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.1",
+    "vite": "^5.4.10",
+    "vite-plugin-singlefile": "^2.0.3"
+  }
+}
