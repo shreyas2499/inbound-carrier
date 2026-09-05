@@ -27,24 +27,31 @@ def test_counter_stays_strictly_below_ceiling():
     assert d["rate"] < M
 
 
-def test_accept_at_ceiling_on_final_round():
-    d = evaluate_offer(M, 3, 1950)
+def test_round3_offers_the_97pct_rung():
+    # round 3 now COUNTERS at 97% (1892); it no longer accepts/rejects here
+    d = evaluate_offer(M, 3, 1900)
+    assert d["action"] == "counter" and d["rate"] == 1892
+
+
+def test_accept_at_ceiling_after_final_offer():
+    # the carrier's response to the 97% offer is round 4: accept up to the ceiling
+    d = evaluate_offer(M, 4, 1950)
     assert d["action"] == "accept" and d["rate"] == 1950
 
 
-def test_reject_on_final_round_above_ceiling():
-    d = evaluate_offer(M, 3, 2100)
+def test_reject_after_final_offer_above_ceiling():
+    d = evaluate_offer(M, 4, 2100)
     assert d["action"] == "reject"
 
 
-def test_final_round_stretches_accept_up_to_ceiling():
-    # round 3 offer ~1892 (97%); a 1920 ask is above our offer but <= ceiling -> accept
-    d = evaluate_offer(M, 3, 1920)
+def test_stretches_accept_up_to_ceiling_after_final_offer():
+    # round 4 (response to the 97% offer): 1920 is above 97% but <= ceiling -> accept
+    d = evaluate_offer(M, 4, 1920)
     assert d["action"] == "accept" and d["rate"] == 1920
 
 
 def test_never_offers_or_accepts_above_ceiling_across_a_sweep():
-    for rnd in (0, 1, 2, 3):
+    for rnd in (0, 1, 2, 3, 4):
         for counter in range(1500, M + 400, 25):
             d = evaluate_offer(M, rnd, counter)
             if d["rate"] is not None:
