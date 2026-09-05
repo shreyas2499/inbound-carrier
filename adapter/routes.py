@@ -48,6 +48,29 @@ def _load_record(load_id: str):
     return record
 
 
+@bp.get("/")
+def index():
+    """Friendly root so the base URL isn't a bare 404. This is an API service --
+    every real capability lives under a path below. /tools/* require the adapter
+    API key (X-API-Key); /health, / and /otp/peek are public."""
+    return jsonify(
+        service="inbound-carrier-adapter",
+        status="ok",
+        message="Inbound carrier sales adapter. This is an API, not a website.",
+        endpoints={
+            "health": "GET /health",
+            "verify_carrier": "POST /tools/verify_carrier",
+            "search_loads": "POST /tools/search_loads",
+            "get_load": "POST /tools/get_load",
+            "evaluate_offer": "POST /tools/evaluate_offer",
+            "book_load": "POST /tools/book_load",
+            "send_otp": "POST /tools/send_otp",
+            "verify_otp": "POST /tools/verify_otp",
+            "otp_peek": "GET /otp/peek?mc=<mc>",
+        },
+    )
+
+
 @bp.get("/health")
 def health():
     return jsonify(status="ok")

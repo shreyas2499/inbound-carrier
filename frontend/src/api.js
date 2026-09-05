@@ -1,7 +1,14 @@
 // Adapter base URL, injected at build time (VITE_ADAPTER_BASE). Empty string =
 // same origin (used in local dev via the vite proxy). In production on Railway,
 // set VITE_ADAPTER_BASE to the adapter service's public URL.
-export const API_BASE = (import.meta.env.VITE_ADAPTER_BASE || '').replace(/\/+$/, '')
+// Prefer the build-time override (VITE_ADAPTER_BASE). If it isn't injected, fall
+// back to same-origin in local dev (so the vite proxy handles /otp) and to the
+// adapter's known Railway URL in a production build -- this keeps the deployed
+// app working even when the platform doesn't pass the build arg through.
+const FALLBACK = import.meta.env.DEV
+  ? ''
+  : 'https://inbound-carrier-production-aeb4.up.railway.app'
+export const API_BASE = (import.meta.env.VITE_ADAPTER_BASE || FALLBACK).replace(/\/+$/, '')
 
 // The carrier "device" reads the currently-active code for an MC. This endpoint
 // is intentionally public (a real phone carries no API key); it's the demo
