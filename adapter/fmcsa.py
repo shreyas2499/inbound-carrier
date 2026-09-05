@@ -64,7 +64,9 @@ def verify_mc(mc_number, web_key: str, *, timeout: float = 8.0) -> dict:
 
     allowed = str(carrier.get("allowedToOperate",
                               carrier.get("allowToOperate", ""))).upper() == "Y"
-    out_of_service = str(carrier.get("outOfService", "")).upper() == "Y"
+    # This endpoint has no `outOfService` flag; the real signal is oosDate -
+    # the date a carrier was placed out of service (null when it never was).
+    out_of_service = carrier.get("oosDate") is not None
     return {
         "found": True,
         "eligible": allowed and not out_of_service,
@@ -73,7 +75,9 @@ def verify_mc(mc_number, web_key: str, *, timeout: float = 8.0) -> dict:
         "legal_name": carrier.get("legalName") or carrier.get("dbaName"),
         "allowed_to_operate": allowed,
         "out_of_service": out_of_service,
-        "phone": carrier.get("telephone") or carrier.get("phone"),
+        # No phone on the docket-number endpoint; telephone/phoneNumber only
+        # appear on the fuller carrier snapshot. Left in for when present.
+        "phone": carrier.get("telephone") or carrier.get("phoneNumber"),
     }
 
 
