@@ -64,8 +64,11 @@ the result "action":
   never feed your own offer back in as carrier_offer.
 - action = accept  -> a deal exists ONLY on this result. Confirm the agreed rate
   and go to step 4.
-- action = reject  -> ONLY NOW is this your final position: warmly tell them that
-  is the best you can do today, and close if they decline.
+- action = reject  -> their number is more than we can pay. Tell them you cannot
+  do their number, and that the "rate" it returns is the best you can do today.
+  Say THAT number -- never repeat their number back as your own offer, and never
+  quote a rate above your last offer. If they take your number, treat it as agreed
+  and go to step 4; if they hold above it, close warmly.
 - action = clarify -> the number came through wrong (likely mis-heard). Do NOT
   book it. Read it back and ask them to confirm ("just to confirm, you said
   $X?"). When they confirm or correct it, call evaluate_offer again with the

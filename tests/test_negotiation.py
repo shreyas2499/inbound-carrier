@@ -52,8 +52,10 @@ def test_accept_at_ceiling_after_final_offer():
 
 
 def test_reject_after_final_offer_above_ceiling():
+    # above the ceiling -> reject, but hand back our 97% final offer (1892), never
+    # the carrier's over-ceiling number
     d = evaluate_offer(M, 4, 2100)
-    assert d["action"] == "reject"
+    assert d["action"] == "reject" and d["rate"] == 1892
 
 
 def test_stretches_accept_up_to_ceiling_after_final_offer():

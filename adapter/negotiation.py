@@ -13,7 +13,8 @@ countering:
 Rounds 1-3 always counter along the ladder (accepting early only if the carrier
 already meets that rung). Only AFTER the 97% offer -- the carrier's response to
 it, round 4+ -- does acceptance stretch to the true ceiling: any number at or
-under MAX_BUY is accepted, and only a demand above MAX_BUY is rejected.
+under MAX_BUY is accepted; a demand above MAX_BUY is rejected, and the policy
+hands back our 97% offer as the final take-it-or-leave-it number.
 
 Sanity floor: a "counter" below our own opening offer (85%) is not a real bid --
 no carrier hauls below the opening -- so it is almost always a mis-heard figure.
@@ -64,7 +65,9 @@ def evaluate_offer(max_buy, round_number, carrier_counter=None) -> dict:
         return {"action": "counter", "rate": our_offer}
 
     # Round 4+ (the carrier's response to our final 97% offer): accept anything up to
-    # the true ceiling to save the load, otherwise walk.
+    # the true ceiling to save the load. Above the ceiling we cannot go -- reject
+    # their number, but hand back OUR final offer (97%) as the rate so the agent has
+    # a concrete "best I can do" to hold on, never the carrier's over-ceiling number.
     if carrier_counter <= max_buy:
         return {"action": "accept", "rate": carrier_counter}
-    return {"action": "reject", "rate": None}
+    return {"action": "reject", "rate": round(max_buy * OFFER_LADDER[LAST_LADDER_ROUND])}
