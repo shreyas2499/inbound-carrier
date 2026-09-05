@@ -11,10 +11,15 @@ countering:
     round 3 counter     97%     (the final rung we proactively OFFER)
 
 Rounds 1-3 always counter along the ladder (accepting early only if the carrier
-already meets that rung), so a carrier who keeps negotiating is shown all three
-numbers. Only AFTER the 97% offer -- the carrier's response to it, round 4+ --
-does acceptance stretch to the true ceiling: any number at or under MAX_BUY is
-accepted to save a bookable load, and only a demand above MAX_BUY is rejected.
+already meets that rung). Only AFTER the 97% offer -- the carrier's response to
+it, round 4+ -- does acceptance stretch to the true ceiling: any number at or
+under MAX_BUY is accepted, and only a demand above MAX_BUY is rejected.
+
+Sanity floor: a "counter" below our own opening offer (85%) is not a real bid --
+no carrier hauls below the opening -- so it is almost always a mis-heard figure.
+It is NEVER booked; the policy returns action="clarify" so the agent re-confirms
+the number before acting.
+
 MAX_BUY drives every decision, is never returned to the agent, and the loadboard
 RATE is ignored entirely.
 """
@@ -30,18 +35,25 @@ LAST_LADDER_ROUND = 3
 def evaluate_offer(max_buy, round_number, carrier_counter=None) -> dict:
     """Return the agent's next move.
 
-    round 0 / no carrier_counter -> {'action': 'offer',  'rate': opening}
-    a carrier counter            -> {'action': 'accept'|'counter'|'reject', 'rate': int|None}
+    round 0 / no carrier_counter -> {'action': 'offer', 'rate': opening}
+    a carrier counter -> {'action': 'accept'|'counter'|'reject'|'clarify', 'rate': int|None}
     """
     max_buy = int(max_buy)
     r = int(round_number)
+    opening = round(max_buy * OFFER_LADDER[0])
 
     # Opening: no counter yet (or round 0).
     if carrier_counter is None or r <= 0:
-        return {"action": "offer", "rate": round(max_buy * OFFER_LADDER[0])}
+        return {"action": "offer", "rate": opening}
 
     r = max(1, r)
     carrier_counter = int(carrier_counter)
+
+    # Sanity floor: a number below our own opening offer is not a real counter
+    # (a carrier never bids below the opening) -- almost always a mis-heard figure.
+    # Never book it; ask the agent to re-confirm the number.
+    if carrier_counter < opening:
+        return {"action": "clarify", "rate": carrier_counter}
 
     # Rounds 1-3: proactively concede one rung up the ladder (91% -> 94.75% -> 97%),
     # accepting straight away only if the carrier already meets that rung.

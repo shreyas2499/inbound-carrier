@@ -21,6 +21,18 @@ def test_accept_when_counter_within_our_stepped_offer():
     assert d["action"] == "accept" and d["rate"] == 1750
 
 
+def test_lowball_far_below_opening_asks_to_clarify():
+    # 69 is far below the 1658 opening (85%) -> re-confirm, never book
+    d = evaluate_offer(M, 1, 69)
+    assert d["action"] == "clarify" and d["rate"] == 69
+
+
+def test_number_at_the_opening_is_valid_not_clarified():
+    # exactly the opening (round(1950*0.85)=1658) is a legit number, accepted
+    d = evaluate_offer(M, 1, 1658)
+    assert d["action"] == "accept" and d["rate"] == 1658
+
+
 def test_counter_stays_strictly_below_ceiling():
     d = evaluate_offer(M, 1, 1900)
     assert d["action"] == "counter"
