@@ -27,7 +27,8 @@ def _make(handler, host_port_holder):
     host, port = mock.__enter__()
     host_port_holder.append(mock)
     cfg = Config(tms_host=host, tms_port=port, tms_token="t-test", fmcsa_api_key="",
-                 adapter_api_key=API_KEY, tms_timeout=0.5, tms_max_retries=0)
+                 adapter_api_key=API_KEY, tms_timeout=0.5, tms_max_retries=0,
+                 twin_api_key="", twin_api_base="", twin_timeout=0.5)
     client = TmsClient(host, port, "t-test", timeout=0.5, max_retries=0)
     return create_app(client=client, config=cfg).test_client()
 
