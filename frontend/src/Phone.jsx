@@ -80,14 +80,14 @@ export default function Phone({ open, mc, phase, code, secsLeft, ttl, onClose })
                   <span className={s.nTitle}>MESSAGES</span>
                   <span className={s.nTime}>now</span>
                 </div>
-                <div className={s.nSender}>FreightVerify</div>
+                <div className={s.nSender}>HappyRobot Logistics</div>
                 <div className={s.nMsg}>Your carrier verification code is</div>
                 <div className={s.nCode}>{code}</div>
                 <div className={s.nMeter}>
                   <i style={{ transform: `scaleX(${frac})`, background: low ? '#c2620a' : '#2563eb' }} />
                 </div>
                 <div className={s.nFoot}>
-                  <b>Expires in {fmt(secsLeft)}</b> · Never share this code. FreightVerify will never call to ask for it.
+                  <b>Expires in {fmt(secsLeft)}</b> · Never share this code. HappyRobot Logistics will never call to ask for it.
                 </div>
               </div>
             )}
