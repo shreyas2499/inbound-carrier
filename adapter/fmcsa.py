@@ -75,3 +75,35 @@ def verify_mc(mc_number, web_key: str, *, timeout: float = 8.0) -> dict:
         "out_of_service": out_of_service,
         "phone": carrier.get("telephone") or carrier.get("phone"),
     }
+
+
+
+def raw_lookup(mc_number, web_key: str, *, timeout: float = 8.0) -> dict:
+    """DEV-ONLY: return the FULL, untrimmed FMCSA response for an MC number.
+
+    Unlike verify_mc (which returns a small eligibility summary), this hands back
+    everything FMCSA sent -- the complete JSON envelope plus the extracted carrier
+    record -- so you can see every identity field on offer (address, EIN, fleet
+    size, MCS-150, safety rating, ...). Raises FmcsaUnavailable on a real failure.
+    """
+    mc = _digits(mc_number)
+    if not mc:
+        return {"found": False, "mc_number": str(mc_number),
+                "reason": "no MC number provided"}
+    url = f"{FMCSA_BASE}/docket-number/{mc}"
+    try:
+        resp = requests.get(url, params={"webKey": web_key}, timeout=timeout)
+        status = resp.status_code
+        resp.raise_for_status()
+        data = resp.json()
+    except requests.RequestException as e:
+        raise FmcsaUnavailable(f"FMCSA lookup failed: {e}") from e
+    except ValueError as e:
+        raise FmcsaUnavailable(f"FMCSA returned non-JSON: {e}") from e
+    return {
+        "mc_number": mc,
+        "request_url": url,
+        "status_code": status,
+        "carrier": _carrier_record(data),   # the record verify_mc keys off
+        "raw": data,                         # the complete untrimmed envelope
+    }

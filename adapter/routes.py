@@ -199,3 +199,24 @@ def debug_load_raw():
     # Everything LOAD_GET returned; datetimes rendered JSON-safe, NOTHING removed.
     full = {k: (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in load.items()}
     return jsonify(load=full)
+
+
+
+@bp.post("/debug/fmcsa_raw")
+@require_api_key
+def debug_fmcsa_raw():
+    """DEV-ONLY verification-exploration endpoint. Returns the COMPLETE raw FMCSA
+    QCMobile response for an MC number -- every field FMCSA sends, untrimmed, plus
+    the extracted carrier record -- so you can see which identity fields (address,
+    EIN, fleet size, MCS-150, ...) are available. Not used by the agent; remove
+    before shipping.
+    """
+    body = request.get_json(silent=True) or {}
+    mc = body.get("mc_number") or body.get("MC_NUM") or body.get("mc")
+    if not mc:
+        return jsonify(error="missing_field", message="mc_number required"), 400
+    try:
+        result = fmcsa.raw_lookup(mc, _config().fmcsa_api_key)
+    except fmcsa.FmcsaUnavailable as e:
+        return jsonify(error="fmcsa_unavailable", message=str(e)), 503
+    return jsonify(**result)
