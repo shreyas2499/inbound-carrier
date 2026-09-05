@@ -12,6 +12,7 @@ Design in one line:
     call_records  -> 1 row per CALL,      written by the WORKFLOW -> KPI dashboard
     event_log     -> 1 row per API call,  written by the ADAPTER  -> raw audit log
     carriers      -> 1 row per CARRIER,   upserted by the ADAPTER -> history + OTP home
+    otp_challenges-> 1 row per CARRIER,   upserted by the ADAPTER -> live identity-verification code
 
 Rules baked into the schema:
     * call_records stores `margin_vs_ceiling`, NEVER `max_buy`. Dashboard-facing.
@@ -95,6 +96,32 @@ class Carrier:
     fmcsa_raw: Optional[dict[str, Any]]# jsonb     last full FMCSA payload (optional; else see event_log)
 
 
+# --- otp_challenges : one row per carrier, upserted on mc_number (writer: adapter)
+@dataclass
+class OtpChallenge:
+    """One identity-verification challenge for a carrier, keyed on mc_number and
+    upserted (a new send_otp replaces the carrier's prior code) -- the Twin
+    equivalent of the adapter's live SQLite store in otp.py. Move the OTP state
+    here when it must survive adapter restarts or be shared across replicas
+    (the /tmp SQLite store is per-container and ephemeral). Links to
+    [carriers].mc_number for the contact-of-record.
+
+    SECURITY: the in-memory demo store keeps the code in the clear, which is fine
+    for a short-lived process-local secret. In a shared DB the code should be
+    HASHED at rest -- hash `code` (e.g. sha256 + per-row salt) before writing,
+    and compare hashes on verify. Never store a live plaintext OTP in Twin."""
+
+    id: str                            # uuid      pk
+    mc_number: str                     # text      natural key (unique) -> carriers.mc_number
+    code: str                          # text      the one-time code (HASH before storing in Twin)
+    call_id: Optional[str]             # text      correlates to call_records.id (audit)
+    created_at: datetime               # timestamp when issued (UTC)
+    expires_at: datetime               # timestamp issued + TTL (UTC)
+    attempts: int                      # int4      wrong-code guesses so far (locks at OTP_MAX_ATTEMPTS)
+    verified: bool                     # boolean   whether a correct code cleared it
+    verified_at: Optional[datetime]    # timestamp when verified (null until verified)
+
+
 # --- negotiation_rounds : OPTIONAL, one row per offer (writer: workflow) -----
 # Only add this if we want per-round negotiation analytics. call_records.rounds
 # already covers the required KPIs, so treat this as a nice-to-have, not a must.
@@ -116,5 +143,6 @@ TABLES = {
     "call_records": ("workflow", "one row per carrier call — drives the KPI dashboard"),
     "event_log": ("adapter", "one row per API/tool call — raw internal audit log"),
     "carriers": ("adapter", "one row per carrier (upsert on mc_number) — history + OTP contact home"),
+    "otp_challenges": ("adapter", "one row per carrier (upsert on mc_number) — active identity-verification code"),
     # "negotiation_rounds": ("workflow", "one row per negotiation round"),  # optional
 }
