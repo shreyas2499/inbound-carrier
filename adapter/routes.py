@@ -173,3 +173,29 @@ def book_load():
                            note="confirmed after ambiguous booking")
         return jsonify(status="uncertain", error="book_ambiguous",
                        message="booking could not be confirmed; needs review"), 503
+
+
+@bp.post("/debug/load_raw")
+@require_api_key
+def debug_load_raw():
+    """DEV-ONLY verification endpoint. Returns the COMPLETE raw TMS record for a
+    load exactly as LOAD_GET yields it — MAX_BUY and every internal field included,
+    nothing stripped or reshaped. Not used by the agent; remove before shipping.
+
+    Bypasses the cache so it always reflects a fresh LOAD_GET off the wire.
+    """
+    body = request.get_json(silent=True) or {}
+    load_id = body.get("load_id") or body.get("LOAD_ID")
+    if not load_id:
+        return jsonify(error="missing_field", message="load_id required"), 400
+    try:
+        load = _client().load_get(load_id)
+    except TmsError as e:
+        return jsonify(error=e.code, message=e.message), 404 if e.code == "UNKNOWN_LOAD" else 502
+    except TmsUnavailable as e:
+        return jsonify(error="tms_unavailable", message=str(e)), 503
+    if not load:
+        return jsonify(error="UNKNOWN_LOAD"), 404
+    # Everything LOAD_GET returned; datetimes rendered JSON-safe, NOTHING removed.
+    full = {k: (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in load.items()}
+    return jsonify(load=full)
