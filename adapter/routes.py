@@ -9,9 +9,11 @@ Two guarantees enforced at this layer: MAX_BUY never leaves the server, and ever
 """
 from __future__ import annotations
 
+import os
+
 from flask import Blueprint, current_app, jsonify, request
 
-from adapter import fmcsa
+from adapter import fmcsa, otp
 from adapter.auth import require_api_key
 from adapter.negotiation import evaluate_offer as evaluate_offer_policy
 from adapter.serializers import public_load
@@ -220,3 +222,43 @@ def debug_fmcsa_raw():
     except fmcsa.FmcsaUnavailable as e:
         return jsonify(error="fmcsa_unavailable", message=str(e)), 503
     return jsonify(**result)
+
+
+@bp.post("/tools/send_otp")
+@require_api_key
+def send_otp():
+    """Issue a one-time code for a carrier's MC and 'deliver' it to their device
+    (readable via the public /otp/peek). Returns only delivery metadata -- never
+    the code itself, so the agent can't leak it."""
+    body = request.get_json(silent=True) or {}
+    mc = body.get("mc_number") or body.get("mc") or body.get("MC_NUM")
+    if not mc:
+        return jsonify(error="missing_field", message="mc_number required"), 400
+    return jsonify(**otp.issue(mc))
+
+
+@bp.post("/tools/verify_otp")
+@require_api_key
+def verify_otp():
+    """The gate the agent must clear before load matching. Expiry, attempt limits
+    and single-use are all enforced here, so no conversational framing from the
+    caller can bypass verification."""
+    body = request.get_json(silent=True) or {}
+    mc = body.get("mc_number") or body.get("mc")
+    code = body.get("code") or body.get("otp")
+    if not mc or code in (None, ""):
+        return jsonify(error="missing_field", message="mc_number and code required"), 400
+    return jsonify(**otp.verify(mc, code))
+
+
+@bp.get("/otp/peek")
+def otp_peek():
+    """PUBLIC (no API key): the carrier 'device' page reads its active code here.
+    This is the demo stand-in for an SMS arriving on the handset, so -- like a real
+    phone -- it carries no adapter auth. CORS-open because the device UI is served
+    from a separate origin (its own Railway service)."""
+    result = otp.peek(request.args.get("mc", ""))
+    resp = jsonify(**result)
+    resp.headers["Access-Control-Allow-Origin"] = os.environ.get("OTP_CORS_ORIGIN", "*")
+    resp.headers["Cache-Control"] = "no-store"
+    return resp

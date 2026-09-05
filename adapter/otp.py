@@ -1,0 +1,145 @@
+"""One-time-code issuance and verification for carrier identity.
+
+Backed by a tiny SQLite table so state is shared across the gunicorn workers in
+a single container -- a plain in-memory dict would live in one worker only, and a
+code issued by worker A could not be verified by worker B. Codes are random,
+single-use, attempt-limited and time-boxed. The agent-facing endpoints never
+return a code; only the public /otp/peek (the carrier "device") reveals it, which
+is the demo stand-in for an SMS arriving on the carrier's handset.
+
+Env knobs (all optional, sane defaults):
+  OTP_TTL_SECONDS   how long an issued code stays valid          (default 180)
+  OTP_MAX_ATTEMPTS  wrong-code guesses before the code locks      (default 4)
+  OTP_DB_PATH       SQLite file path                              (default /tmp/carrier_otp.db)
+"""
+from __future__ import annotations
+
+import os
+import secrets
+import sqlite3
+import threading
+import time
+from contextlib import contextmanager
+
+OTP_TTL = int(os.environ.get("OTP_TTL_SECONDS", "180"))
+OTP_MAX_ATTEMPTS = int(os.environ.get("OTP_MAX_ATTEMPTS", "4"))
+_DB_PATH = os.environ.get("OTP_DB_PATH", "/tmp/carrier_otp.db")
+
+_init_lock = threading.Lock()
+_initialized = False
+
+
+def _digits(value) -> str:
+    return "".join(ch for ch in str(value) if ch.isdigit())
+
+
+@contextmanager
+def _db():
+    conn = sqlite3.connect(_DB_PATH, timeout=5)
+    conn.execute("PRAGMA busy_timeout=5000")
+    try:
+        yield conn
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _ensure_schema() -> None:
+    """Create the table once per process. Cheap idempotent guard so callers don't
+    have to think about init ordering across workers."""
+    global _initialized
+    if _initialized:
+        return
+    with _init_lock:
+        if _initialized:
+            return
+        with _db() as conn:
+            conn.execute("PRAGMA journal_mode=WAL")  # readers don't block the writer
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS otp (
+                    mc        TEXT PRIMARY KEY,
+                    code      TEXT    NOT NULL,
+                    created   REAL    NOT NULL,
+                    expires   REAL    NOT NULL,
+                    attempts  INTEGER NOT NULL DEFAULT 0,
+                    verified  INTEGER NOT NULL DEFAULT 0
+                )"""
+            )
+        _initialized = True
+
+
+def issue(mc_number) -> dict:
+    """Mint a fresh code for an MC, replacing any prior one. Returns only metadata
+    -- never the code itself (the agent must not see it)."""
+    _ensure_schema()
+    mc = _digits(mc_number)
+    if not mc:
+        return {"sent": False, "reason": "no MC number provided"}
+    code = f"{secrets.randbelow(1000000):06d}"
+    now = time.time()
+    with _db() as conn:
+        conn.execute(
+            """INSERT INTO otp (mc, code, created, expires, attempts, verified)
+               VALUES (?, ?, ?, ?, 0, 0)
+               ON CONFLICT(mc) DO UPDATE SET
+                   code=excluded.code, created=excluded.created,
+                   expires=excluded.expires, attempts=0, verified=0""",
+            (mc, code, now, now + OTP_TTL),
+        )
+    return {"sent": True, "mc_number": mc, "expires_in": OTP_TTL, "ttl": OTP_TTL}
+
+
+def peek(mc_number) -> dict:
+    """Public read used by the carrier device page. Reveals the active code (this
+    IS the delivery channel in the demo). Never returns a code once expired."""
+    _ensure_schema()
+    mc = _digits(mc_number)
+    if not mc:
+        return {"status": "none"}
+    now = time.time()
+    with _db() as conn:
+        row = conn.execute(
+            "SELECT code, expires, verified FROM otp WHERE mc=?", (mc,)
+        ).fetchone()
+    if not row:
+        return {"status": "none"}
+    code, expires, verified = row
+    if verified:
+        return {"status": "verified", "verified": True}
+    if now >= expires:
+        return {"status": "none"}
+    return {"status": "active", "code": code,
+            "expires_in": int(round(expires - now)), "ttl": OTP_TTL}
+
+
+def verify(mc_number, code) -> dict:
+    """Agent-facing check. Enforces: a code must have been issued, not expired,
+    under the attempt cap, and an exact match. On success the code is consumed
+    (marked verified). This is the server-side half of the anti-social-engineering
+    guarantee -- the agent cannot 'skip' it, because nothing here can be bypassed
+    by conversation."""
+    _ensure_schema()
+    mc = _digits(mc_number)
+    submitted = _digits(code)
+    if not mc or not submitted:
+        return {"verified": False, "reason": "missing_mc_or_code"}
+    now = time.time()
+    with _db() as conn:
+        row = conn.execute(
+            "SELECT code, expires, attempts, verified FROM otp WHERE mc=?", (mc,)
+        ).fetchone()
+        if not row:
+            return {"verified": False, "reason": "no_code_issued"}
+        real, expires, attempts, verified = row
+        if verified:
+            return {"verified": True, "reason": "already_verified"}
+        if now >= expires:
+            return {"verified": False, "reason": "expired"}
+        if attempts >= OTP_MAX_ATTEMPTS:
+            return {"verified": False, "reason": "too_many_attempts"}
+        if secrets.compare_digest(str(real), submitted):
+            conn.execute("UPDATE otp SET verified=1 WHERE mc=?", (mc,))
+            return {"verified": True, "reason": "ok"}
+        conn.execute("UPDATE otp SET attempts=attempts+1 WHERE mc=?", (mc,))
+        remaining = max(0, OTP_MAX_ATTEMPTS - (attempts + 1))
+        return {"verified": False, "reason": "incorrect", "attempts_remaining": remaining}
