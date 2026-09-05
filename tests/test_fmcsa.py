@@ -35,7 +35,7 @@ def _carrier(**fields):
 
 def test_active_carrier_is_eligible(monkeypatch):
     _patch(monkeypatch, resp=_carrier(
-        allowedToOperate="Y", outOfService="N", legalName="ACME TRUCKING LLC",
+        allowedToOperate="Y", oosDate=None, legalName="ACME TRUCKING LLC",
         dotNumber=1234567, telephone="5551234567"))
     r = fmcsa.verify_mc("MC-872144", "key")
     assert r["found"] and r["eligible"]
@@ -51,8 +51,25 @@ def test_not_allowed_to_operate_is_ineligible(monkeypatch):
 
 
 def test_out_of_service_is_ineligible(monkeypatch):
-    _patch(monkeypatch, resp=_carrier(allowedToOperate="Y", outOfService="Y", legalName="X"))
-    assert fmcsa.verify_mc("872144", "key")["eligible"] is False
+    # FMCSA has no `outOfService` flag -- being placed out of service is signalled
+    # by a non-null oosDate, so a carrier can be allowedToOperate AND out of service.
+    _patch(monkeypatch, resp=_carrier(
+        allowedToOperate="Y", oosDate="2024-03-01", legalName="X"))
+    r = fmcsa.verify_mc("872144", "key")
+    assert r["out_of_service"] is True
+    assert r["eligible"] is False
+
+
+def test_live_shape_without_oos_fields_is_eligible(monkeypatch):
+    # Guards the regression this fix came from: the real docket-number payload has
+    # NO `outOfService` and NO `telephone` key at all. Reading a field that never
+    # exists must not silently mark every carrier in service OR blow up.
+    _patch(monkeypatch, resp=_carrier(
+        allowedToOperate="Y", legalName="OUZA TRANSPORTATION INC", dotNumber=2514144))
+    r = fmcsa.verify_mc("872144", "key")
+    assert r["eligible"] is True
+    assert r["out_of_service"] is False
+    assert r["phone"] is None
 
 
 def test_carrier_not_found(monkeypatch):
