@@ -104,10 +104,11 @@ def peek(mc_number) -> dict:
     if not row:
         return {"status": "none"}
     code, expires, verified = row
-    if verified:
-        return {"status": "verified", "verified": True}
+    # Expiry first: a stale verified row must not keep showing "verified" forever.
     if now >= expires:
         return {"status": "none"}
+    if verified:
+        return {"status": "verified", "verified": True}
     return {"status": "active", "code": code,
             "expires_in": int(round(expires - now)), "ttl": OTP_TTL}
 
@@ -131,14 +132,17 @@ def verify(mc_number, code) -> dict:
         if not row:
             return {"verified": False, "reason": "no_code_issued"}
         real, expires, attempts, verified = row
-        if verified:
-            return {"verified": True, "reason": "already_verified"}
+        # A code passes ONLY while it is live AND matches. An already-verified row
+        # does NOT auto-pass a new (possibly wrong) code, and expired / attempt-
+        # locked rows never pass. This is what stops a stale "verified" state -- or
+        # a skipped send_otp -- from waving a dummy code through.
         if now >= expires:
             return {"verified": False, "reason": "expired"}
         if attempts >= OTP_MAX_ATTEMPTS:
             return {"verified": False, "reason": "too_many_attempts"}
         if secrets.compare_digest(str(real), submitted):
-            conn.execute("UPDATE otp SET verified=1 WHERE mc=?", (mc,))
+            if not verified:
+                conn.execute("UPDATE otp SET verified=1 WHERE mc=?", (mc,))
             return {"verified": True, "reason": "ok"}
         conn.execute("UPDATE otp SET attempts=attempts+1 WHERE mc=?", (mc,))
         remaining = max(0, OTP_MAX_ATTEMPTS - (attempts + 1))
