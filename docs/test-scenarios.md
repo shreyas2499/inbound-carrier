@@ -77,6 +77,9 @@ Regression cases — several of these were real bugs.
 | 4.8 | Agent invents / splits the difference | ❌ every dollar comes from evaluate_offer only | ☐ |
 | 4.9 | Caller goes silent mid-negotiation | Agent doesn't call evaluate_offer twice in a row; waits | ☐ |
 | 4.10 | Caller holds above the final offer | Closes warmly, no deal, doesn't exceed last offer | ☐ |
+| 4.11 | Caller's number arrives in fragments across turns ("we'll put 74" … "740") | ONE offer at the SAME round — evaluate_offer called once, not twice (real bug: round 3→4 on the same $740) | ☐ |
+| 4.12 | Agent's counter gets cut off mid-sentence | Agent repeats the same number; does NOT re-call evaluate_offer or advance the round | ☐ |
+| 4.13 | Read-back before hand-off | Agent reads back rate + load, then WAITS for an explicit yes before the hand-off line | ☐ |
 
 ## 5. Call flow, turn-taking, ending
 
