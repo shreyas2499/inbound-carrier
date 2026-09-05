@@ -20,6 +20,11 @@ Rules baked into the schema:
       jsonb) — which DO contain max_buy (verbatim get_load). INTERNAL audit only,
       never surfaced to the agent or a carrier-facing app. Secrets (TMS AUTH
       token, FMCSA webKey) are NEVER written to the request payload.
+    * Twin has NO dev/staging/prod separation of its own -- it is one database per
+      workspace (unlike Workflows/Runs, which are environment-scoped). Rows carry
+      an `environment` column instead, populated from the workflow's built-in
+      `Execution Environment` global, so KPIs can filter to production and test
+      traffic stays auditable rather than discarded.
 """
 from __future__ import annotations
 
@@ -37,6 +42,8 @@ class CallRecord:
 
     id: str                            # uuid      pk
     started_at: datetime               # timestamp call start (UTC)
+    environment: Optional[str]         # text      development|staging|production
+                                       #           (workflow global: Execution Environment)
     mc_number: Optional[str]           # text      carrier identity (null if never given)
     carrier_name: Optional[str]        # text      legal name from FMCSA
     authority_eligible: Optional[bool] # boolean   FMCSA authority result
@@ -64,6 +71,9 @@ class EventLog:
 
     id: str                            # uuid      pk
     ts: datetime                       # timestamp when the call happened (UTC)
+    environment: Optional[str]         # text      development|staging|production; the adapter
+                                       #           only knows it if the workflow passes the
+                                       #           Execution Environment global in the tool body
     call_id: Optional[str]             # text      correlates rows to one CallRecord.id
     tool: str                          # text      fmcsa|search_loads|get_load|evaluate_offer|book_load
     mc_number: Optional[str]           # text      denormalized for filtering
