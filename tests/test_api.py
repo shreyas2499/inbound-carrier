@@ -67,7 +67,8 @@ def test_get_load_strips_max_buy(mocks):
                headers={"X-API-Key": API_KEY})
     body = r.get_json()
     assert r.status_code == 200
-    assert body["load"]["RATE"] == 2150
+    assert body["load"]["ORIG_STATE"] == "GA"     # ordinary fields still pass through
+    assert "RATE" not in body["load"]             # posted rate withheld so the agent cannot anchor on it
     assert "MAX_BUY" not in body["load"]          # the ceiling never reaches the agent
 
 
