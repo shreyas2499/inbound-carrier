@@ -85,7 +85,7 @@ def search_loads():
     # Falls back to the summary row if a detail fetch fails, and warms the per-call
     # cache so a following get_load / evaluate_offer on the same load is hot.
     detailed = []
-    for row in loads:
+    for row in loads[:1]:
         lid = row.get("LOAD_ID")
         record = None
         if lid:
