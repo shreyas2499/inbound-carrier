@@ -16,9 +16,9 @@ def test_missing_counter_returns_opening_regardless_of_round():
 
 
 def test_accept_when_counter_within_our_stepped_offer():
-    # round 1 offer ~1820; a 1800 counter is within it -> accept at 1800
-    d = evaluate_offer(M, 1, 1800)
-    assert d["action"] == "accept" and d["rate"] == 1800
+    # round 1 offer ~1774 (91% of 1950); a 1750 counter is within it -> accept at 1750
+    d = evaluate_offer(M, 1, 1750)
+    assert d["action"] == "accept" and d["rate"] == 1750
 
 
 def test_counter_stays_strictly_below_ceiling():
@@ -35,6 +35,12 @@ def test_accept_at_ceiling_on_final_round():
 def test_reject_on_final_round_above_ceiling():
     d = evaluate_offer(M, 3, 2100)
     assert d["action"] == "reject"
+
+
+def test_final_round_stretches_accept_up_to_ceiling():
+    # round 3 offer ~1892 (97%); a 1920 ask is above our offer but <= ceiling -> accept
+    d = evaluate_offer(M, 3, 1920)
+    assert d["action"] == "accept" and d["rate"] == 1920
 
 
 def test_never_offers_or_accepts_above_ceiling_across_a_sweep():
