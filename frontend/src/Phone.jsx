@@ -82,7 +82,7 @@ export default function Phone({ open, mc, phase, code, secsLeft, ttl, onClose })
                 </div>
                 <div className={s.nSender}>FreightVerify</div>
                 <div className={s.nMsg}>Your carrier verification code is</div>
-                <div className={s.nCode}>{code.split('').join(' ')}</div>
+                <div className={s.nCode}>{code}</div>
                 <div className={s.nMeter}>
                   <i style={{ transform: `scaleX(${frac})`, background: low ? '#c2620a' : '#2563eb' }} />
                 </div>

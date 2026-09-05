@@ -19,7 +19,7 @@
 
 .phone {
   position: relative;
-  width: 296px;
+  width: 336px;
   max-width: 82vw;
   aspect-ratio: 296 / 610;
   background: linear-gradient(#1b1b20, #000);
@@ -194,11 +194,12 @@
 }
 .nCode {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 30px;
+  font-size: 34px;
   font-weight: 600;
-  letter-spacing: 7px;
-  text-indent: 7px;
+  letter-spacing: 10px;
+  text-indent: 10px;
   margin: 6px 0 4px;
+  white-space: nowrap;
 }
 .nMeter {
   height: 4px;
