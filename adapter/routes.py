@@ -80,7 +80,21 @@ def search_loads():
         return jsonify(error=e.code, message=e.message), 502
     except TmsUnavailable as e:
         return jsonify(error="tms_unavailable", message=str(e)), 503
-    return jsonify(loads=[public_load(l) for l in loads], count=len(loads))
+    # Enrich each summary hit with its full LOAD_GET record so search returns the
+    # complete load detail the TMS holds, not just the LOAD_QUERY summary fields.
+    # Falls back to the summary row if a detail fetch fails, and warms the per-call
+    # cache so a following get_load / evaluate_offer on the same load is hot.
+    detailed = []
+    for row in loads:
+        lid = row.get("LOAD_ID")
+        record = None
+        if lid:
+            try:
+                record = _load_record(lid)
+            except (TmsError, TmsUnavailable):
+                record = None
+        detailed.append(record or row)
+    return jsonify(loads=[public_load(l) for l in detailed], count=len(detailed))
 
 
 @bp.post("/tools/get_load")
