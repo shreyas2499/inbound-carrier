@@ -114,9 +114,35 @@ def verify_carrier():
             authority_eligible=result.get("eligible"),
             phone=result.get("phone"),
         )
+    # The identity code is issued HERE, by the server, the moment authority checks
+    # out -- not by a separate tool the agent has to remember to call. Those two
+    # steps always ran back-to-back with no decision in between, and a gate that
+    # depends on the model choosing to open it is a gate that eventually doesn't
+    # get opened: live calls repeatedly showed the agent SAYING "I'm sending a
+    # code" in the same breath as the welcome and never making the call, leaving
+    # the caller waiting on a text that was never sent. Issuing it server-side
+    # makes that failure structurally impossible -- there is no longer a call to
+    # skip. /tools/send_otp stays, and is now purely the RESEND path.
+    #
+    # Strictly gated on `eligible`. An unknown or non-eligible MC gets NO code:
+    # that call ends at this step anyway, and minting codes for arbitrary MC
+    # numbers would turn this endpoint into a way to spray challenges at carriers
+    # who never called. No authority, no code.
+    otp_sent = False
+    if result.get("eligible"):
+        otp_sent = bool(
+            otp.issue(_twin(), result.get("mc_number") or mc,
+                      run_id=call_context(body)["run_id"]).get("sent")
+        )
+
     # Always 200 on a completed lookup (found or not) so the workflow branches on
     # `eligible` rather than on HTTP status. Only a real API failure is a 503.
-    return jsonify(**result)
+    #
+    # otp_sent is delivery metadata only -- never the code itself. False on an
+    # eligible carrier means the store failed: the agent must fall back to
+    # send_otp rather than tell the caller to look at a phone that has nothing
+    # on it.
+    return jsonify(**result, otp_sent=otp_sent)
 
 
 @bp.post("/tools/search_loads")

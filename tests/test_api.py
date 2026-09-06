@@ -174,6 +174,93 @@ def test_verify_carrier_endpoint_eligible(mocks, monkeypatch):
     assert body["phone"] == "5551234567"
 
 
+def _fmcsa_stub(monkeypatch, *, allowed="Y", oos_date=None):
+    """Point fmcsa at a canned SAFER response so the route can be exercised.
+    Note the out-of-service signal is `oosDate`, not an `outOfService` flag --
+    this endpoint has no such flag, and stubbing the wrong key silently produces
+    an ELIGIBLE carrier."""
+    from adapter import fmcsa
+
+    class R:
+        status_code = 200
+        def raise_for_status(self): pass
+        def json(self):
+            return {"content": [{"carrier": {"allowedToOperate": allowed,
+                                             "oosDate": oos_date,
+                                             "legalName": "ACME TRUCKING",
+                                             "dotNumber": 1,
+                                             "telephone": "5551234567"}}]}
+
+    monkeypatch.setattr(fmcsa.requests, "get", lambda *a, **k: R())
+
+
+def _spy_on_issue(monkeypatch):
+    """Replace otp.issue with a recorder. Returns the list it appends MCs to."""
+    from adapter import routes
+
+    seen = []
+
+    def fake_issue(client, mc_number, run_id=None):
+        seen.append(str(mc_number))
+        return {"sent": True, "mc_number": str(mc_number)}
+
+    monkeypatch.setattr(routes.otp, "issue", fake_issue)
+    return seen
+
+
+def test_verify_carrier_issues_code_when_eligible(mocks, monkeypatch):
+    """The happy path sends the identity code server-side, so the agent has no
+    tool call it can forget to make."""
+    _fmcsa_stub(monkeypatch)
+    seen = _spy_on_issue(monkeypatch)
+    c = _make(_route_handler, mocks)
+    r = c.post("/tools/verify_carrier", json={"mc_number": "872144"},
+               headers={"X-API-Key": API_KEY})
+    body = r.get_json()
+    assert body["eligible"] is True
+    assert body["otp_sent"] is True
+    assert seen == ["872144"]
+
+
+def test_verify_carrier_issues_no_code_when_not_eligible(mocks, monkeypatch):
+    """No authority, no code. Otherwise this endpoint becomes a way to spray
+    challenges at any MC number a caller cares to read out."""
+    _fmcsa_stub(monkeypatch, allowed="N")
+    seen = _spy_on_issue(monkeypatch)
+    c = _make(_route_handler, mocks)
+    r = c.post("/tools/verify_carrier", json={"mc_number": "872144"},
+               headers={"X-API-Key": API_KEY})
+    body = r.get_json()
+    assert body["eligible"] is False
+    assert body["otp_sent"] is False
+    assert seen == []
+
+
+def test_verify_carrier_issues_no_code_when_out_of_service(mocks, monkeypatch):
+    _fmcsa_stub(monkeypatch, oos_date="2026-01-15")
+    seen = _spy_on_issue(monkeypatch)
+    c = _make(_route_handler, mocks)
+    r = c.post("/tools/verify_carrier", json={"mc_number": "872144"},
+               headers={"X-API-Key": API_KEY})
+    assert r.get_json()["otp_sent"] is False
+    assert seen == []
+
+
+def test_verify_carrier_reports_otp_failure(mocks, monkeypatch):
+    """A store failure must not read as a delivered code -- the agent has to know
+    to fall back to send_otp rather than tell the caller to check their phone."""
+    from adapter import routes
+    _fmcsa_stub(monkeypatch)
+    monkeypatch.setattr(routes.otp, "issue",
+                        lambda *a, **k: {"sent": False, "reason": "store_unavailable"})
+    c = _make(_route_handler, mocks)
+    body = c.post("/tools/verify_carrier", json={"mc_number": "872144"},
+                  headers={"X-API-Key": API_KEY}).get_json()
+    assert body["eligible"] is True
+    assert body["otp_sent"] is False
+    assert "code" not in body            # never, under any circumstances
+
+
 def test_verify_carrier_requires_mc(mocks):
     c = _make(_route_handler, mocks)
     r = c.post("/tools/verify_carrier", json={}, headers={"X-API-Key": API_KEY})

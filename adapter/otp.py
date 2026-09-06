@@ -154,7 +154,12 @@ def peek(client, mc_number) -> dict:
     if not expires or _now() >= expires:
         return {"status": "none"}
     if row.get("verified"):
-        return {"status": "verified", "verified": True}
+        # expires_in rides along on the verified response too, so the device page
+        # can time its own panel out locally instead of depending on a poll
+        # arriving to tell it the challenge is dead.
+        return {"status": "verified", "verified": True,
+                "expires_in": int(round((expires - _now()).total_seconds())),
+                "ttl": OTP_TTL}
     return {"status": "active", "code": row.get("code"),
             "expires_in": int(round((expires - _now()).total_seconds())),
             "ttl": OTP_TTL}
