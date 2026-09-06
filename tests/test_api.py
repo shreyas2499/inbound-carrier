@@ -165,6 +165,50 @@ def test_book_ambiguous_is_confirmed_via_get(mocks):
     assert "confirmed" in body.get("note", "")
 
 
+def test_debug_board_returns_every_match_without_an_origin(mocks):
+    """The board browser exists precisely to do what /tools/search_loads refuses:
+    search on equipment alone and hand back everything, not one enriched load."""
+    c = _make(_route_handler, mocks)
+    r = c.post("/debug/board", json={"eqtype": "DRY_VAN"},
+               headers={"X-API-Key": API_KEY})
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["count"] >= 1
+    assert body["filters"] == {"EQTYPE": "DRY_VAN"}
+    assert body["loads"][0]["LOAD_ID"] == "LD0000045821"
+
+
+def test_debug_board_still_needs_the_api_key(mocks):
+    c = _make(_route_handler, mocks)
+    assert c.post("/debug/board", json={"eqtype": "DRY_VAN"}).status_code in (401, 403)
+
+
+def test_debug_board_detail_exposes_the_ceiling_and_ladder(mocks):
+    """Debug-only, like /debug/load_raw — this one is ALLOWED to show MAX_BUY, and
+    previews the rungs so a negotiation can be eyeballed before spending a call."""
+    c = _make(_route_handler, mocks)
+    r = c.post("/debug/board", json={"eqtype": "DRY_VAN", "detail": True},
+               headers={"X-API-Key": API_KEY})
+    load = r.get_json()["loads"][0]
+    assert load["MAX_BUY"] == 2500
+    assert load["_accepts_up_to"] == 2500
+    assert load["_ladder"]["round_0"] == 2125     # 85% of 2500
+    assert load["_ladder"]["round_3"] == 2425     # 97%
+
+
+def test_debug_board_requires_a_filter(mocks):
+    c = _make(_route_handler, mocks)
+    r = c.post("/debug/board", json={}, headers={"X-API-Key": API_KEY})
+    assert r.status_code == 400
+
+
+def test_debug_board_is_not_reachable_as_a_tool(mocks):
+    """It must never be mistaken for an agent tool: no /tools/ alias exists."""
+    c = _make(_route_handler, mocks)
+    assert c.post("/tools/board", json={"eqtype": "DRY_VAN"},
+                  headers={"X-API-Key": API_KEY}).status_code == 404
+
+
 def test_book_load_records_without_committing(mocks):
     """Read-only scope: the deal is confirmed and recorded, the load is not
     committed to the TMS, and no booking_ref is invented."""

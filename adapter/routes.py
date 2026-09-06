@@ -15,6 +15,7 @@ from flask import Blueprint, current_app, jsonify, request
 
 from adapter import fmcsa, otp, twin_helper
 from adapter.auth import require_api_key
+from adapter.negotiation import OFFER_LADDER
 from adapter.negotiation import evaluate_offer as evaluate_offer_policy
 from adapter.obs import CORRELATION_KEYS, call_context
 from adapter.serializers import public_load
@@ -452,6 +453,83 @@ def debug_twin_probe():
     return jsonify(ok=all(s["ok"] for s in steps),
                    api_base=getattr(client, "api_base", None),
                    probe_mc=probe_mc, steps=steps)
+
+
+@bp.post("/debug/board")
+@require_api_key
+def debug_board():
+    """DEV-ONLY board browser. Runs LOAD_QUERY with whatever filters you give it
+    and returns EVERY matching row — not the one enriched load /tools/search_loads
+    hands the agent.
+
+    Why this exists separately rather than as a flag on search_loads: that endpoint
+    deliberately requires an origin (an origin-less search matches the whole
+    national board, which is how a caller who never said where they were got
+    pitched a 3,832-mile Alaska run) and deliberately returns ONE load, because the
+    agent pitches one. Both are correct for a live call and both get in the way of
+    "show me what dry vans are on the board." So the guard rails stay on the agent
+    path and the unrestricted view lives here, behind the API key, unreachable from
+    the workflow.
+
+    Body: any LOAD_QUERY filter — eqtype, orig_state, dest_state, orig_city, ...
+    (at least one; the TMS itself requires it), plus:
+      max_results  cap on rows returned      (default 25)
+      detail       true -> enrich every row via LOAD_GET, which adds MAX_BUY and
+                   the exact ladder the negotiator would walk for that load.
+                   One extra round-trip per row, so it is off by default.
+
+    Debug-only, like /debug/load_raw: this DOES expose MAX_BUY and the posted RATE.
+    Never wire it to a tool node.
+    """
+    body = request.get_json(silent=True) or {}
+    detail = bool(body.get("detail"))
+    try:
+        max_results = int(body.get("max_results", 25))
+    except (TypeError, ValueError):
+        max_results = 25
+    max_results = max(1, min(max_results, 100))
+
+    filters = {k.upper(): v for k, v in body.items()
+               if v not in (None, "")
+               and k.lower() not in CORRELATION_KEYS
+               and k.lower() not in ("detail", "max_results")}
+    if not filters:
+        return jsonify(error="missing_field",
+                       message="at least one filter required (e.g. eqtype)"), 400
+
+    try:
+        rows = _client().load_query(**filters)
+    except TmsError as e:
+        return jsonify(error=e.code, message=e.message), 502
+    except TmsUnavailable as e:
+        return jsonify(error="tms_unavailable", message=str(e)), 503
+
+    total = len(rows)
+    rows = rows[:max_results]
+
+    out = []
+    for row in rows:
+        record = row
+        if detail:
+            lid = row.get("LOAD_ID")
+            if lid:
+                try:
+                    record = _load_record(lid) or row
+                except (TmsError, TmsUnavailable):
+                    record = row
+        item = {k: (v.isoformat() if hasattr(v, "isoformat") else v)
+                for k, v in record.items()}
+        ceiling = _as_int(record.get("MAX_BUY"))
+        if ceiling is not None:
+            # What the agent would actually say on this load, round by round. Makes
+            # it possible to eyeball a negotiation before spending a call on it.
+            item["_ladder"] = {f"round_{r}": round(ceiling * frac)
+                               for r, frac in sorted(OFFER_LADDER.items())}
+            item["_accepts_up_to"] = ceiling
+        out.append(item)
+
+    return jsonify(loads=out, count=len(out), matched=total,
+                   truncated=total > len(out), filters=filters)
 
 
 @bp.post("/debug/load_raw")
