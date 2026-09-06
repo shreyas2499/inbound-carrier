@@ -13,10 +13,11 @@ const rnd = () => String(Math.floor(100000 + Math.random() * 900000))
 // State machine for the carrier device: idle | waiting | code | verified.
 //
 // Live mode renders whatever the adapter's /otp/peek reports RIGHT NOW -- there is
-// no sticky local state. So when a code's ~3-minute life ends the screen clears to
-// blank (ready for the next message rather than displaying the stale one), and a
-// freshly issued code -- even for a carrier who was already verified -- shows up on
-// the next poll.
+// no sticky local state. A freshly issued code -- even for a carrier who was
+// already verified -- shows up on the next poll. And when a delivered message
+// reaches the end of its ~3-minute life the DEVICE DISMISSES ITSELF: not a blank
+// handset left sitting open (which reads as broken), but the phone gone, back to
+// the landing card with the MC still typed in, one click from reconnecting.
 //
 // Expiry is enforced in BOTH layers, on purpose. The backend decides (peek returns
 // status "none" once expires_at has passed) and the client holds an independent
@@ -36,6 +37,7 @@ export function useOtp() {
   const demoTickRef = useRef(null)
   const mcRef = useRef(null)
   const deadlineRef = useRef(0)   // absolute ms timestamp the current code dies at
+  const armedRef = useRef(false)  // has a message actually been delivered this session?
   const isDemo = useRef(
     params.get('demo') === '1' ||
     (typeof location !== 'undefined' && location.protocol === 'file:')
@@ -47,6 +49,8 @@ export function useOtp() {
     }
   }
 
+  // Before any message has arrived, an empty backend just means "nothing yet" --
+  // sit on the blank lock screen and keep listening.
   const clearScreen = useCallback(() => {
     deadlineRef.current = 0
     setCode('')
@@ -54,27 +58,52 @@ export function useOtp() {
     setPhase('waiting')
   }, [])
 
+  // AFTER a message has been delivered, the end of its ~3-minute life ends the
+  // whole session: the phone is dismissed, not just emptied. A blank handset
+  // sitting open forever reads as broken, and the point of the device is to show
+  // a message arriving and then going away. `stop()` sets phase 'idle', which is
+  // what App.jsx keys the overlay's `open` off.
+  //
+  // Both routes into expiry land here so they cannot race each other to a
+  // half-state: the local deadline elapsing, and the backend reporting the
+  // challenge gone. Whichever notices first, the result is the same.
+  const expire = useCallback(() => {
+    armedRef.current = false
+    stopTimers()
+    mcRef.current = null
+    deadlineRef.current = 0
+    setCode('')
+    setSecsLeft(0)
+    setMc(null)
+    setPhase('idle')
+  }, [])
+
   // Reflect the backend's current status, nothing more.
   const applyStatus = useCallback((d) => {
     const status = d && (d.status || (d.verified ? 'verified' : null))
     if (status === 'verified') {
       // A verified panel is still tied to the challenge's life: once the code it
-      // confirmed expires, the screen goes back to blank like any other message.
+      // confirmed expires, the device is done and dismisses itself.
       if (d.expires_in != null) deadlineRef.current = Date.now() + Number(d.expires_in) * 1000
+      armedRef.current = true
       setPhase('verified')
       return
     }
     if (status === 'active' && d.code) {
       const secs = Number(d.expires_in ?? d.ttl ?? 0)
       deadlineRef.current = Date.now() + secs * 1000
+      armedRef.current = true
       setCode(String(d.code))
       setTtl(Number(d.ttl ?? 180))
       setSecsLeft(secs)
       setPhase('code')
       return
     }
-    clearScreen() // status none -> blank lock screen, ready for the next code
-  }, [clearScreen])
+    // status none: nothing live. Before a message has arrived that means "still
+    // waiting"; after one, it means this challenge is over -- dismiss the phone.
+    if (armedRef.current) expire()
+    else clearScreen()
+  }, [clearScreen, expire])
 
   // Preview-only driver (no backend). Loops the real states so the UI is reviewable:
   // code -> expire(blank) -> code -> verified -> blank -> a NEW code (a verified
@@ -121,9 +150,9 @@ export function useOtp() {
       if (!deadlineRef.current) return
       const left = Math.max(0, Math.round((deadlineRef.current - Date.now()) / 1000))
       setSecsLeft(left)
-      if (left <= 0) clearScreen()
+      if (left <= 0) expire()
     }, 1000)
-  }, [clearScreen])
+  }, [expire])
 
   // Self-scheduling rather than setInterval: a slow response delays the next poll
   // instead of stacking a queue of overlapping requests on top of it.
@@ -159,6 +188,7 @@ export function useOtp() {
     mcRef.current = digits
     setMc(digits)
     deadlineRef.current = 0
+    armedRef.current = false
     setPhase('waiting')
     if (isDemo.current) {
       runDemo()
@@ -173,6 +203,7 @@ export function useOtp() {
     stopTimers()
     mcRef.current = null
     deadlineRef.current = 0
+    armedRef.current = false
     setMc(null)
     setPhase('idle')
   }, [])

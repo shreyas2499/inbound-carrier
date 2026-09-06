@@ -101,6 +101,9 @@ Regression cases — several of these were real bugs.
 | 4.14 | Caller repeats a number already countered ("735" … "735" … "735") | Agent does NOT re-call evaluate_offer to be told the same figure. Says it itself, holds once, then asks for a yes/no (real bug: 719 quoted 3× across 3 tool calls, 796c2111) | ☐ |
 | 4.15 | Caller accepts, agent calls evaluate_offer anyway | ❌ acceptance ends the negotiation — no further tool call (real bug: 6th call after "sounds good", 796c2111) | ☐ |
 | 4.16 | Very long-haul load (3,800+ mi, five-figure rate) | Ladder is proportional to MAX_BUY, so the rungs scale correctly — a $10k offer is right if the ceiling is $12k (42f824af: $10,224 on 3,832 mi = $2.67/mi ✅) | ✅ 42f824af |
+| 4.17 | **Deal closes on a counter the carrier accepts verbally** | agreed_rate + margin must still be recorded. The server never sees an `accept` here — acceptance is a conversational event — so margin is now written on EVERY exchange and pairs with last_rate (real bug: NULL money on 90eb69cb and 42f824af) | ☐ (unit ✅) |
+| 4.18 | Carrier counters ABOVE the ceiling every round | Never accepted; ladder counters to the 97% rung and the carrier takes it (90eb69cb: 780/770/760 vs a $759 ceiling → closed 736) | ✅ 90eb69cb |
+| 4.19 | Full ladder + round-4 accept | All four rungs then a true `accept` — the only path that writes agreed_rate server-side today | ✅ fbf0615a |
 
 ## 5. Call flow, turn-taking, ending
 
@@ -138,6 +141,7 @@ Regression cases — several of these were real bugs.
 | 7.6 | Carrier device page: code expires (wait out the 3-min TTL) | Notification clears to a blank lock screen. Enforced in BOTH layers — peek returns status:none AND the page holds its own absolute deadline | ☐ |
 | 7.7 | Carrier device page: /otp/peek slower than the poll interval | Screen must still expire on time. Real bug: the abort was 1300ms against a 1500ms poll, so a slow backend aborted EVERY poll and froze the panel on screen indefinitely | ☐ |
 | 7.8 | Carrier device page: adapter unreachable mid-call | Keeps the current screen (never invents a code), and the local deadline still expires it on schedule | ☐ |
+| 7.9 | Carrier device page: phone still open after the TTL | ❌ was: notification cleared but the handset stayed up as a blank lock screen. Now the whole device DISMISSES itself at expiry — back to the landing card, MC still typed | ☐ |
 
 ## 8. Data integrity / leakage (must-never)
 
@@ -254,6 +258,39 @@ OTP issuance. The identity gate held; the load search did not.
 
 Note the negotiation path is going untested: the caller accepted the opening offer
 here, so rungs 1–3 never ran. Push back a few times on the next call.
+
+---
+
+
+**90eb69cb** (6 Sep, dry van NJ->VA, booked 736) — first run with the origin gate.
+
+| Scenario | Result |
+|---|---|
+| 2.17 verify_carrier issues the code | ✅ `otp_sent: true`, no send_otp row in event_log |
+| 3.3 / 3.7 origin required before searching | ✅ agent asked "What state are you in right now?"; search carried orig_state NJ + dest_state VA |
+| 4.2 ladder rungs in order | ✅ 645 / 691 / 719 / 736 against a $759 ceiling — 4 calls, 4 rungs, rounds 0-3 |
+| 4.14 no tool call to restate a figure | ✅ "Maybe a little higher" (not a number) → agent asked "What rate would you need?" instead of re-calling |
+| 4.15 no tool call after acceptance | ✅ |
+| 10.x carriers / otp_challenges upsert | ✅ one OTP row per MC, verified 16s after issue; call_count 3, first/last seen moving |
+| — | ❌ **agreed_rate and margin_vs_ceiling NULL.** Carrier offers were 780/770/760, all ABOVE the $759 ceiling, so the server never returned `accept` — it countered to 736 and the carrier said yes out loud. Money columns keyed off `action == "accept"` never fired. See 4.17 |
+
+**fbf0615a** (6 Sep, dry van UT->IL, booked 2750) — the cleanest run so far, and
+the first to exercise the whole ladder including a round-4 accept.
+
+| Scenario | Result |
+|---|---|
+| 2.17 verify_carrier issues the code | ✅ |
+| 3.3 origin asked before searching | ✅ asked equipment, then origin, then destination — three separate turns |
+| 4.2 ladder rungs in order | ✅ 2382 / 2550 / 2655 / 2718, then accept@2750 against a $2,802 ceiling. Rounds 0-4, five calls, no repeats |
+| 4.12 agent's counter cut off mid-sentence | ✅ "Does twenty-" was Cut at 2:09; the agent did NOT re-call evaluate_offer or advance the round — it took the carrier's 2750 as round 4 |
+| 4.6 read-back + explicit yes before handoff | ✅ |
+| 9.12 adapter vs LLM cross-check | ✅ `extracted_agreed_rate` 2750 == `agreed_rate` 2750; `extracted_rounds` 5 == `rounds` 5 |
+| Money columns | ✅ **complete for the first time** — loadboard 2535, agreed 2750, margin 52 (ceiling 2802). Paid above the posted rate but $52 under the ceiling |
+
+Every column populated except `num_tool_calls`, `assistant_cut_ratio` and
+`p90_latency_ms`, which are unmapped in the Store Call Details node. Note this run
+HAD a cut turn — `assistant_cut_ratio` is exactly the metric that would have
+flagged it, and it is the one not being written.
 
 ---
 
