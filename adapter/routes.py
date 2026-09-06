@@ -305,6 +305,24 @@ def debug_twin_probe():
     _step("otp.peek", lambda: {k: v for k, v in otp.peek(client, probe_mc).items()
                                if k != "code"})
     _step("otp store last error", lambda: otp.last_error() or "none")
+    # event_log is the other silent writer: ints and jsonb go over the same wire,
+    # so it needs the same coercion. Exercised synchronously here for that reason.
+    _step("insert event_log (int + jsonb columns)",
+          lambda: client.insert_row("event_log", {
+              "tool": "debug/twin_probe",
+              "status": "ok",
+              "latency_ms": 42,
+              "run_id": body.get("run_id"),
+              "environment": "development",
+              "request": {"probe": True, "nested": {"n": 1}},
+              "response": {"ok": True},
+          }))
+    # call_records money columns: ints patched onto an existing row.
+    if body.get("run_id"):
+        _step("patch call_records money columns",
+              lambda: client.update_row("call_records", {"run_id": body["run_id"]},
+                                        {"loadboard_rate": 2600,
+                                         "margin_vs_ceiling": 52}))
     found = _step("find (client-side scan of GET /twin/tables/carriers)",
                   lambda: client.find_row("carriers", "mc_number", probe_mc))
     if found and found.get("id"):

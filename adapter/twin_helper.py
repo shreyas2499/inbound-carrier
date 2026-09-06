@@ -39,6 +39,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import json
 import logging
 import threading
 from typing import Any, Optional
@@ -100,17 +101,58 @@ class TwinClient:
                 return resp.text
         return None
 
+    # --- wire format --------------------------------------------------------
+    @staticmethod
+    def _wire(values: dict[str, Any]) -> dict[str, str]:
+        """Twin's row API takes every value as a STRING, whatever the column type.
+
+        Learned the hard way -- an int in `attempts` came back as:
+            400 #/values/attempts/invalid_type:
+                Invalid input: expected string, received number
+
+        Postgres casts on the way in, so "0" lands in an int4 column and "true"
+        in a boolean. Getting this wrong was invisible for a long time because
+        every writer here is fire-and-forget: the 400s were swallowed and the
+        tables just stayed empty.
+
+        Rules, in the order they matter:
+          * None      -> the key is DROPPED, never sent as null. The API rejects
+                         nulls outright, and omitting a key is also what we want
+                         semantically: "don't touch this column" rather than
+                         "blank it".
+          * bool      -> "true"/"false" BEFORE the int branch, because in Python
+                         a bool IS an int and str(True) would give "True".
+          * datetime  -> ISO-8601.
+          * dict/list -> compact JSON, for jsonb columns.
+        """
+        wired: dict[str, str] = {}
+        for key, value in values.items():
+            if value is None:
+                continue
+            if isinstance(value, bool):
+                wired[key] = "true" if value else "false"
+            elif isinstance(value, (int, float)):
+                wired[key] = str(value)
+            elif isinstance(value, datetime):
+                wired[key] = value.isoformat()
+            elif isinstance(value, (dict, list)):
+                wired[key] = json.dumps(value, separators=(",", ":"), default=str)
+            else:
+                wired[key] = str(value)
+        return wired
+
     # --- table-row primitives ---------------------------------------------
     def insert_row(self, table: str, values: dict[str, Any]) -> Any:
         """POST /twin/tables/{table}/rows  ->  201."""
         return self._request("POST", f"/twin/tables/{table}/rows",
-                             json_body={"values": values})
+                             json_body={"values": self._wire(values)})
 
     def update_row(self, table: str, primary_key: dict[str, Any],
                    updates: dict[str, Any]) -> Any:
         """PATCH /twin/tables/{table}/rows."""
         return self._request("PATCH", f"/twin/tables/{table}/rows",
-                             json_body={"primaryKey": primary_key, "updates": updates})
+                             json_body={"primaryKey": self._wire(primary_key),
+                                        "updates": self._wire(updates)})
 
     def delete_rows(self, table: str, row_keys: list[dict[str, Any]]) -> Any:
         """DELETE /twin/tables/{table}/rows  ->  {"deletedCount": n}."""
