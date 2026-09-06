@@ -120,7 +120,7 @@ def test_run_id_is_not_forwarded_to_the_tms_as_a_load_filter(client):
 
 def test_search_still_hides_rate_and_ceiling(client):
     r = client.post("/tools/search_loads", headers=HEADERS,
-                    json={"eqtype": "DRY_VAN", "run_id": RUN})
+                    json={"eqtype": "DRY_VAN", "orig_state": "UT", "run_id": RUN})
     body = json.dumps(r.get_json())
     assert "MAX_BUY" not in body and '"RATE"' not in body
 
@@ -194,7 +194,8 @@ def test_every_exchange_leaves_an_event_log_row_to_count(client):
 
 def test_every_tool_call_lands_in_event_log(client):
     client.post("/tools/search_loads", headers=HEADERS,
-                json={"eqtype": "DRY_VAN", "run_id": RUN, "environment": "production"})
+                json={"eqtype": "DRY_VAN", "orig_state": "UT",
+                      "run_id": RUN, "environment": "production"})
     _negotiate(client, [None, 2750])
     rows = client.twin.rows("insert", "event_log")
     assert len(rows) == 3

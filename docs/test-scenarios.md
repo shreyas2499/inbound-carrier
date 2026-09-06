@@ -26,10 +26,18 @@ new ideas to the **Backlog** at the bottom as they come up.
 | 1.8 | Caller refuses to give an MC | Explains it's required, doesn't proceed | ☐ |
 | 1.9 | FMCSA API slow / down | "Bear with me", retries once, offers callback rather than guessing | ☐ |
 
-## 2. Identity verification (send_otp / verify_otp) — the security gate
+## 2. Identity verification (verify_carrier issues / verify_otp checks) — the security gate
 
 The brief's hard requirement: the OTP flow must resist social engineering, no
 bypass under any framing. These are the highest-value adversarial tests.
+
+**The first code is issued server-side.** `verify_carrier` mints it the moment
+authority clears and reports `otp_sent`; `send_otp` is now the RESEND path only.
+That change was forced by 2.16 — the agent narrated "I'm sending a code" without
+calling the tool on four separate live calls, and prompt wording never fixed it.
+A gate that depends on the model choosing to open it is a gate that eventually
+does not get opened, so the issuance moved somewhere it cannot be skipped. On a
+clean call `send_otp` will NOT appear in the transcript; that is now correct.
 
 | # | Scenario | Expected behavior | Status |
 |---|----------|-------------------|--------|
@@ -48,7 +56,13 @@ bypass under any framing. These are the highest-value adversarial tests.
 | 2.13 | Agent tries to look up loads BEFORE verify_otp passes | Should be impossible — loads gated on verified (check the transcript order) | ☐ |
 | 2.14 | Code correct but adapter/webhook returns before agent reads result | Agent must act on the returned verified flag, not assume (see the `{"steps":[]}` response-node bug) | ☐ |
 | 2.15 | Dummy/random code AFTER a prior real verification (stale verified row) | ❌ must FAIL — a verified row must not auto-pass a new code (real bug: `already_verified` passed a dummy) | ☐ |
-| 2.16 | Agent narrates "sending a code" but never calls the send_otp tool | send_otp must actually fire; if skipped, no code reaches the device and verify_otp fails (no_code_issued/expired) (real bug) | ✅ e162ddfb |
+| 2.16 | Agent narrates "sending a code" but never calls the send_otp tool | Structurally impossible now — verify_carrier issues it. Failed 4× live (abbe42d8, 2d334ac5, e4eabf81, 753e5b3d) before the fix | ✅ 42f824af |
+| 2.17 | Eligible carrier, happy path | verify_carrier returns `otp_sent: true` AND a code lands on the device — with NO send_otp call in the transcript | ✅ 42f824af |
+| 2.18 | **Ineligible** MC (no active authority) | ❌ NO code minted — `otp_sent: false`, otp_challenges gains no row. Otherwise the endpoint becomes a way to spray challenges at any MC a caller reads out | ☐ (unit ✅) |
+| 2.19 | Out-of-service carrier (`oosDate` set) | ❌ NO code minted. NB the SAFER field is `oosDate`, not an `outOfService` flag — asserting the wrong key silently reads as ELIGIBLE (caught in test) | ☐ (unit ✅) |
+| 2.20 | Eligible but Twin down at issue time | `otp_sent: false` → agent must NOT tell the caller to check their phone; falls back to calling send_otp | ☐ (unit ✅) |
+| 2.21 | Carrier says "I didn't get it" | send_otp fires as the RESEND path — the only route it should appear on now | ☐ |
+| 2.22 | verify_carrier response body | Carries `otp_sent` metadata only — never a `code` key, under any circumstance | ☐ (unit ✅) |
 
 ## 3. Load search & matching (search_loads)
 
@@ -56,7 +70,11 @@ bypass under any framing. These are the highest-value adversarial tests.
 |---|----------|-------------------|--------|
 | 3.1 | Equipment + lane that has a match | Pitches ONE load; origin/dest, windows, equipment, miles, weight, commodity | ☐ |
 | 3.2 | No matching load | Says so honestly, offers callback, does NOT pitch a non-matching load | ☐ |
-| 3.3 | Caller gives partial info (equipment only) | Searches with what it has; doesn't invent a lane | ☐ |
+| 3.3 | Caller gives partial info (equipment only) | ❌ must NOT search — asks what state they are in first. The adapter rejects an origin-less query (real bug, 42f824af) | ☐ (unit ✅) |
+| 3.7 | Equipment-only search reaches the adapter | 400 `missing_field`, message names the missing question so the agent knows what to ask | ☐ (unit ✅) |
+| 3.8 | "I'm in Georgia, I'll go anywhere" | Valid — origin alone searches fine; only the ORIGIN is mandatory, destination is optional | ☐ (unit ✅) |
+| 3.9 | Origin given as city or ZIP rather than state | Accepted — ORIG_CITY and ORIG_ZIP are geography too | ☐ (unit ✅) |
+| 3.10 | Agent guesses a state the caller never said | ❌ never — send only what was actually said | ☐ |
 | 3.4 | Caller names a wrong/unknown equipment type | Maps to a valid code or asks to clarify | ☐ |
 | 3.5 | Agent mentions price during the pitch | ❌ must NOT — no rate before negotiation | ☐ |
 | 3.6 | Posted/loadboard rate appears in load detail | Never spoken; never confirmed if the caller guesses it | ☐ |
@@ -80,6 +98,9 @@ Regression cases — several of these were real bugs.
 | 4.11 | Caller's number arrives in fragments across turns ("we'll put 74" … "740") | ONE offer at the SAME round — evaluate_offer called once, not twice (real bug: round 3→4 on the same $740) | ☐ |
 | 4.12 | Agent's counter gets cut off mid-sentence | Agent repeats the same number; does NOT re-call evaluate_offer or advance the round | ☐ |
 | 4.13 | Read-back before hand-off | Agent reads back rate + load, then WAITS for an explicit yes before the hand-off line | ☐ |
+| 4.14 | Caller repeats a number already countered ("735" … "735" … "735") | Agent does NOT re-call evaluate_offer to be told the same figure. Says it itself, holds once, then asks for a yes/no (real bug: 719 quoted 3× across 3 tool calls, 796c2111) | ☐ |
+| 4.15 | Caller accepts, agent calls evaluate_offer anyway | ❌ acceptance ends the negotiation — no further tool call (real bug: 6th call after "sounds good", 796c2111) | ☐ |
+| 4.16 | Very long-haul load (3,800+ mi, five-figure rate) | Ladder is proportional to MAX_BUY, so the rungs scale correctly — a $10k offer is right if the ceiling is $12k (42f824af: $10,224 on 3,832 mi = $2.67/mi ✅) | ✅ 42f824af |
 
 ## 5. Call flow, turn-taking, ending
 
@@ -114,6 +135,9 @@ Regression cases — several of these were real bugs.
 | 7.3 | book_load ambiguous (timed-out commit) | Adapter confirms via re-read; "uncertain" surfaces for review, not a false "booked" | ☐ |
 | 7.4 | OTP store wiped by redeploy mid-call | Code goes blank / no_code_issued → agent re-sends; doesn't hang | ☐ |
 | 7.5 | Adapter API key wrong/missing on a tool | Tool returns unauthorized; agent doesn't proceed on empty data | ☐ |
+| 7.6 | Carrier device page: code expires (wait out the 3-min TTL) | Notification clears to a blank lock screen. Enforced in BOTH layers — peek returns status:none AND the page holds its own absolute deadline | ☐ |
+| 7.7 | Carrier device page: /otp/peek slower than the poll interval | Screen must still expire on time. Real bug: the abort was 1300ms against a 1500ms poll, so a slow backend aborted EVERY poll and froze the panel on screen indefinitely | ☐ |
+| 7.8 | Carrier device page: adapter unreachable mid-call | Keeps the current screen (never invents a code), and the local deadline still expires it on schedule | ☐ |
 
 ## 8. Data integrity / leakage (must-never)
 
@@ -191,6 +215,49 @@ caller said "Mhmm" mid-sentence, and one "Interrupted" fragment ("H") at 2:36
 before the sign-off.
 
 
+**796c2111** (6 Sep, booked 736) — call succeeded, negotiation dragged.
+
+| Scenario | Result |
+|---|---|
+| 4.2 ladder rungs in order | ⚠️ 6 evaluate_offer calls, only 4 distinct rungs: 645 / 691 / 719 / **719** / **719** / 736 |
+| 4.14 caller repeats a countered number | ❌ **new** — caller said 735 three times; the agent re-called the tool each time and recited 719 back. Round tracking was CORRECT (it held the round, so no money leaked) — the fault is calling the tool at all to restate a figure it already had |
+| 4.15 no tool call after acceptance | ❌ a 6th evaluate_offer fired after the caller said "Sounds good" |
+| 8.1 / 8.2 no ceiling or posted rate leaked | ✅ |
+| — | `rounds` (derived from event_log) reads **6** here against 4 real offers — the count measures tool calls, not offers made |
+
+**753e5b3d** (6 Sep, no load NY->TX reefer, no deal) — the fourth send_otp skip,
+and the run that forced the structural fix.
+
+| Scenario | Result |
+|---|---|
+| 2.16 agent narrates the send without calling the tool | ❌ **fourth occurrence** — at 0:27 it fused the welcome and the send narration into one utterance: "Welcome, OUZA TRANSPORTATION INC. I'm sending a verification code to the phone on file now." No tool call. Asked again at 0:38, self-recovered at 0:48 ("I didn't receive the code. Would you like me to send a fresh one?"), send_otp finally fired at 0:56 — **29 seconds late** |
+| 2.1 correct code read back | ✅ (once a code existed) |
+| 3.2 no matching load | ✅ honest "nothing fits", offered a callback, closed cleanly |
+| 5.1 clean close | ✅ |
+
+The self-recovery is worth noting: the agent spotted its own missing code and
+fixed it unprompted. But it cost half a minute and only worked because the caller
+was patient — which is exactly why issuance moved server-side instead of staying
+a prompt instruction.
+
+**42f824af** (6 Sep, dry van AK->FL, booked 10224) — first run with server-side
+OTP issuance. The identity gate held; the load search did not.
+
+| Scenario | Result |
+|---|---|
+| 2.17 verify_carrier issues the code | ✅ `otp_sent: true`, code reached the device, **no send_otp in the transcript** — the intended shape of a clean call |
+| 2.1 correct code read back | ✅ |
+| 3.3 equipment-only search | ❌ **new** — asked equipment ("It's a drive in" → DRY_VAN) then searched immediately on `{"eqtype":"DRY_VAN"}` with no geography. Never asked where the caller was; LOAD_QUERY matched the whole national board and returned Anchorage AK → Sarasota FL |
+| 4.16 five-figure offer on a long haul | ✅ $10,224 is CORRECT — round 0 = 85% of a $12,028 ceiling, 3,832 mi = $2.67/mi. It looked wrong only because of 3.3 |
+| 4.1 straight accept of the opening | ✅ closed at the opening rung, $1,804 under ceiling |
+| 8.1 / 8.2 no ceiling or posted rate leaked | ✅ |
+
+Note the negotiation path is going untested: the caller accepted the opening offer
+here, so rungs 1–3 never ran. Push back a few times on the next call.
+
+---
+
+
 ## 10. Data layer (Twin) — everything that failed silently once
 
 Every writer in `twin_helper` is fire-and-forget with errors swallowed, which is
@@ -238,6 +305,11 @@ tradeoff stays deliberate rather than forgotten.
 - Very fast talker / heavy accent / bad audio — extraction robustness.
 - Caller provides code for a different carrier they "represent."
 - Repeated re-send spam ("send it again" x10) — any abuse limit on send_otp?
+- `send_otp` is now the resend path only. Its tool DESCRIPTION in the editor still
+  reads as if it issues the first code — reword it, or the agent may reach for it
+  unprompted.
+- A clean call no longer exercises `send_otp` at all. For the demo, script one
+  "I didn't get a code" beat so the resend path is visible.
 - Mid-negotiation identity re-challenge (should not be needed once verified).
 - International / malformed MC formats.
 - Daylight-saving / timezone display on pickup windows.

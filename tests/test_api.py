@@ -73,6 +73,37 @@ def test_get_load_strips_max_buy(mocks):
     assert "MAX_BUY" not in body["load"]          # the ceiling never reaches the agent
 
 
+def test_search_loads_rejects_equipment_only_search(mocks):
+    """Equipment with no geography is how a caller who never said where they were
+    got pitched a 3,832-mile Alaska run. The server refuses it and says what to
+    ask for, so a forgotten question cannot become a confident wrong pitch."""
+    c = _make(_route_handler, mocks)
+    r = c.post("/tools/search_loads", json={"eqtype": "DRY_VAN"},
+               headers={"X-API-Key": API_KEY})
+    assert r.status_code == 400
+    body = r.get_json()
+    assert body["error"] == "missing_field"
+    assert "origin" in body["message"].lower()
+
+
+def test_search_loads_allows_open_destination(mocks):
+    """'I'm in Georgia, I'll go anywhere' is a real answer -- origin alone is a
+    valid search, only the origin is mandatory."""
+    c = _make(_route_handler, mocks)
+    r = c.post("/tools/search_loads", json={"eqtype": "DRY_VAN", "orig_state": "GA"},
+               headers={"X-API-Key": API_KEY})
+    assert r.status_code == 200
+
+
+def test_search_loads_accepts_origin_city_or_zip(mocks):
+    """ORIG_CITY and ORIG_ZIP are geography too -- the guard must not insist on
+    the state field specifically."""
+    c = _make(_route_handler, mocks)
+    for filt in ({"orig_city": "Atlanta"}, {"orig_zip": "30301"}):
+        r = c.post("/tools/search_loads", json=filt, headers={"X-API-Key": API_KEY})
+        assert r.status_code == 200, filt
+
+
 def test_search_loads_returns_summaries(mocks):
     c = _make(_route_handler, mocks)
     r = c.post("/tools/search_loads", json={"orig_state": "GA", "dest_state": "TX"},

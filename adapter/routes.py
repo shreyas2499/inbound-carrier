@@ -156,6 +156,22 @@ def search_loads():
                if v not in (None, "") and k.lower() not in CORRELATION_KEYS}
     if not filters:
         return jsonify(error="missing_field", message="at least one filter required"), 400
+
+    # A search with equipment but NO geography is not a search -- LOAD_QUERY will
+    # happily return the first dry van on the board, which is how a caller who
+    # never said where they were got pitched Anchorage AK -> Sarasota FL. One
+    # forgotten question should not be able to produce a confidently-wrong pitch,
+    # so the requirement lives here rather than only in the prompt.
+    #
+    # ORIGIN is what is mandatory: a truck is somewhere specific and cannot take a
+    # load 3,000 miles from it. Destination stays optional on purpose -- "I'm in
+    # Georgia, I'll go anywhere" is a real and common answer.
+    if not any(k in filters for k in ("ORIG_STATE", "ORIG_CITY", "ORIG_ZIP")):
+        return jsonify(
+            error="missing_field",
+            message="origin required: ask the caller what state they are in "
+                    "(and where they want to go) before searching",
+        ), 400
     try:
         loads = _client().load_query(**filters)
     except TmsError as e:
