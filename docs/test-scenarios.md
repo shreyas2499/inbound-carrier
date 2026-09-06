@@ -98,7 +98,7 @@ Regression cases — several of these were real bugs.
 | 4.11 | Caller's number arrives in fragments across turns ("we'll put 74" … "740") | ONE offer at the SAME round — evaluate_offer called once, not twice (real bug: round 3→4 on the same $740) | ☐ |
 | 4.12 | Agent's counter gets cut off mid-sentence | Agent repeats the same number; does NOT re-call evaluate_offer or advance the round | ☐ |
 | 4.13 | Read-back before hand-off | Agent reads back rate + load, then WAITS for an explicit yes before the hand-off line | ☐ |
-| 4.14 | Caller repeats a number already countered ("735" … "735" … "735") | Agent does NOT re-call evaluate_offer to be told the same figure. Says it itself, holds once, then asks for a yes/no (real bug: 719 quoted 3× across 3 tool calls, 796c2111) | ☐ |
+| 4.14 | Caller repeats a number already countered, or pushes back with no number at all ("can you go a little higher?") | ONE evaluate_offer call per pushback, round incremented. Every pushback advances a rung — the ladder is only delivered if the agent keeps calling (real bug: 35fcfa32 stalled at 2463 and never offered round 3's 2521, which would have ACCEPTED the caller's 2500). The only non-advancing cases are a number still arriving in fragments and the agent's own cut-off reply | ☐ |
 | 4.15 | Caller accepts, agent calls evaluate_offer anyway | ❌ acceptance ends the negotiation — no further tool call (real bug: 6th call after "sounds good", 796c2111) | ☐ |
 | 4.16 | Very long-haul load (3,800+ mi, five-figure rate) | Ladder is proportional to MAX_BUY, so the rungs scale correctly — a $10k offer is right if the ceiling is $12k (42f824af: $10,224 on 3,832 mi = $2.67/mi ✅) | ✅ 42f824af |
 | 4.17 | **Deal closes on a counter the carrier accepts verbally** | agreed_rate + margin must still be recorded. The server never sees an `accept` here — acceptance is a conversational event — so margin is now written on EVERY exchange and pairs with last_rate (real bug: NULL money on 90eb69cb and 42f824af) | ☐ (unit ✅) |
@@ -108,6 +108,8 @@ Regression cases — several of these were real bugs.
 | 4.21 | `book_load` with a rate above the ceiling | 409 `rate_not_offered`, NOTHING written. Last line of defence against a mis-heard number ("twenty-seven fifty" → 2850) being recorded as the deal | ☐ (unit ✅) |
 | 4.22 | Agent hears "rate_not_offered" | Re-confirms the rate with the caller and retries once with evaluate_offer's number — never announces a rejection, never invents a different rate | ☐ |
 | 4.23 | Agent claims a booking reference | ❌ never — no live commit happens; a senior rep finalizes. No ref exists to say | ☐ |
+| 4.24 | Ladder must be walked to the last rung before "best I can do" | The agent may only say it is at its limit AFTER evaluate_offer has returned the round-3 rung. Saying it earlier gives the caller a worse deal than the policy allows | ☐ |
+| 3.11 | "Reefer" misheard as "referral" / "refill" / "reaper" | Agent offers the nearest match ("Did you mean a reefer?") rather than re-reading the three options. 753e5b3d got this right, 35fcfa32 re-listed twice and burned ~17s | ☐ |
 
 ## 5. Call flow, turn-taking, ending
 
@@ -295,6 +297,26 @@ Every column populated except `num_tool_calls`, `assistant_cut_ratio` and
 `p90_latency_ms`, which are unmapped in the Store Call Details node. Note this run
 HAD a cut turn — `assistant_cut_ratio` is exactly the metric that would have
 flagged it, and it is the one not being written.
+
+---
+
+
+**35fcfa32** (6 Sep, reefer SC->SD, booked 2463) — first run with `book_load`
+wired. The data layer is now complete; the negotiation regressed.
+
+| Scenario | Result |
+|---|---|
+| 4.20 book_load records the deal | ✅ **the fix proven live** — closed on a `counter`, and `agreed_rate` 2463 + `margin` 136 were still written (ceiling 2599). This is the exact case that recorded nothing on 90eb69cb and 42f824af |
+| Data completeness | ✅ every column populated except `num_tool_calls`, `assistant_cut_ratio`, `p90_latency_ms` (see the P6 item) |
+| 9.12 adapter vs LLM cross-check | ✅ `extracted_agreed_rate` 2463 == `agreed_rate`; `extracted_rounds` 3 == `rounds` |
+| 3.11 "reefer" misheard | ⚠️ heard "referral" then "refill"; agent re-read the same three options twice instead of offering the nearest match. Correct (it never guessed a type) but cost ~17s |
+| 4.14 pushback must advance a rung | ❌ **regression, and mine.** Rungs went 2209 / 2365 / 2463, then the caller said "can you go a little higher?" twice and "can we do 2500" — three pushbacks, zero further calls. Round 3 (2521) was never offered, and since 2500 ≤ 2521 the policy would have ACCEPTED it. The caller asked for 2500 twice and left with 2463 |
+
+The 4.14 rule was written to fix 796c2111 (the same rung quoted three times) and
+overcorrected: it conflated "restating a number before we have countered again"
+with "holding a number after we have", and the second is a genuine negotiating
+move that should advance. Replaced with a simpler invariant — ONE call per
+pushback, round incremented, whatever form the pushback takes.
 
 ---
 
