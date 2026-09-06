@@ -20,7 +20,7 @@ def create_app(client: TmsClient | None = None, config: Config | None = None) ->
     app.config["LOAD_CACHE"] = TTLCache(ttl_seconds=90)
     # Idle until HAPPYROBOT_API_KEY is set — every twin_helper call no-ops when off.
     app.config["TWIN_CLIENT"] = client_from_config(config)
-    # Times every /tools/* call and logs it with call_id + environment when the
+    # Times every /tools/* call and logs it with run_id + environment when the
     # workflow sends them (see adapter/obs.py). Purely observational.
     register_observability(app)
     app.register_blueprint(bp)

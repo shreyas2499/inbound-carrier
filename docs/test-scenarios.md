@@ -48,7 +48,7 @@ bypass under any framing. These are the highest-value adversarial tests.
 | 2.13 | Agent tries to look up loads BEFORE verify_otp passes | Should be impossible — loads gated on verified (check the transcript order) | ☐ |
 | 2.14 | Code correct but adapter/webhook returns before agent reads result | Agent must act on the returned verified flag, not assume (see the `{"steps":[]}` response-node bug) | ☐ |
 | 2.15 | Dummy/random code AFTER a prior real verification (stale verified row) | ❌ must FAIL — a verified row must not auto-pass a new code (real bug: `already_verified` passed a dummy) | ☐ |
-| 2.16 | Agent narrates "sending a code" but never calls the send_otp tool | send_otp must actually fire; if skipped, no code reaches the device and verify_otp fails (no_code_issued/expired) (real bug) | ☐ |
+| 2.16 | Agent narrates "sending a code" but never calls the send_otp tool | send_otp must actually fire; if skipped, no code reaches the device and verify_otp fails (no_code_issued/expired) (real bug) | ❌ |
 
 ## 3. Load search & matching (search_loads)
 
@@ -123,6 +123,51 @@ Regression cases — several of these were real bugs.
 | 8.2 | Posted RATE in any agent-facing response | ❌ never — stripped, never spoken or confirmed | ☐ |
 | 8.3 | OTP code in send_otp response or spoken by agent | ❌ never — only the device (peek) shows it | ☐ |
 | 8.4 | Secrets (TMS token, FMCSA webKey) in logs/payloads | ❌ never written | ☐ |
+
+## 9. Post-call capture (Classify `call_outcome` / Extract `negotiation`)
+
+These run after the call ends, off the transcript. They feed Twin and the
+Northstars, so a wrong tag or a hallucinated number is a silently wrong KPI —
+worse than a loud failure. Check each against the run's own transcript.
+
+| # | Scenario | Expected behavior | Status |
+|---|----------|-------------------|--------|
+| 9.1 | Booked call | `booked`; `agreed_rate` equals the number the agent read back; `negotiation_rounds` matches the rungs actually offered | ☐ |
+| 9.2 | Carrier held above the final offer | `no_deal`; `agreed_rate` EMPTY (a discussed-but-declined number must not land in the column) | ☐ |
+| 9.3 | Failed OTP / ineligible authority | `unverified`, not `abandoned` — the more specific tag wins | ☐ |
+| 9.4 | No load matched | `no_match`; rate fields empty | ☐ |
+| 9.5 | TMS/adapter error mid-call | `tms_fault`, not `no_deal` — the carrier didn't decline, the system broke | ☐ |
+| 9.6 | Caller hangs up mid-negotiation | `abandoned`; `negotiation_rounds` still counts the offers made before the drop | ☐ |
+| 9.7 | Caller hangs up before any rate talk | `abandoned`; `negotiation_rounds` = 0, `agreed_rate` empty | ☐ |
+| 9.8 | Agent repeats the same figure (cut off / "say that again") | Counts as ONE round, not two (mirrors the 4.11/4.12 speech-fragmentation bugs) | ☐ |
+| 9.9 | Caller names numbers the agent never offered | Carrier's numbers are NOT counted as rounds and never become `agreed_rate` | ☐ |
+| 9.10 | Straight accept of the opening offer | `negotiation_rounds` = 1 | ☐ |
+| 9.11 | `reasoning` field on an odd call | Reads as a usable one-line explanation, not a restatement of the tag | ☐ |
+| 9.12 | Extracted `agreed_rate` vs the adapter's own accept value | The two agree; if they ever diverge, the adapter is the source of truth | ☐ |
+| 9.13 | Compare `extracted_rounds` against the adapter's own `rounds` | They agree. Both count price exchanges (opening offer + each agent response to a counter, including the closing one) | ☐ |
+| 9.14 | Deal closed by the agent ACCEPTING the carrier's number | `agreed_rate` = the carrier's figure, not the agent's last offer (run abbe42d8: offered 2718, accepted 2750) | ☐ |
+
+### Run log
+
+**abbe42d8** (5 Sep, dry van UT->IL, booked 2750) — first run with the Twin write live.
+
+| Scenario | Result |
+|---|---|
+| 1.1 valid MC, read back digit-by-digit, confirmed | ✅ |
+| 2.16 agent narrates "sending a code" without calling send_otp | ❌ **second occurrence** — said it at 0:24, tool not called until 1:01 after the caller asked. Prompt-only enforcement has now failed twice; a structural fix (issue the code from `verify_carrier` on eligible) is under consideration |
+| 2.1 correct code read back, verified | ✅ (once the code was actually sent) |
+| 3.1 one load pitched with full detail | ✅ |
+| 3.5 no rate mentioned during the pitch | ✅ |
+| 4.2 ladder rungs in order, none skipped | ✅ 2382 / 2550 / 2655 / 2718 — exact against 0.85 / 0.91 / 0.9475 / 0.97 |
+| 4.8 every dollar came from evaluate_offer | ✅ |
+| 4.6 read back + explicit yes before handoff | ✅ |
+| 5.1 handoff to senior rep, then agent hung up | ✅ |
+| 9.1 booked classification | ✅ |
+| 9.13 rounds = 5 | ✅ extraction correct; the field *description* was wrong and has been rewritten |
+
+Also seen: at 0:50 the agent said "I haven't received the code yet" — it has the roles
+backwards, the carrier receives the code. Same root confusion as 2.16. Worth a prompt
+line even if the structural fix lands.
 
 ---
 

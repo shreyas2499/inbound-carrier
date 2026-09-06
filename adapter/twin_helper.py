@@ -37,6 +37,8 @@ routes.py once you decide to turn logging on.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import logging
 import threading
 from typing import Any, Optional
@@ -173,11 +175,19 @@ def _scrub(payload: Any) -> Any:
 # ---------------------------------------------------------------------------
 def log_event(client: TwinClient, *, tool: str, status: str,
               request: Optional[dict] = None, response: Optional[Any] = None,
-              call_id: Optional[str] = None, mc_number: Optional[str] = None,
+              run_id: Optional[str] = None, mc_number: Optional[str] = None,
               load_id: Optional[str] = None, latency_ms: Optional[int] = None,
               background: bool = True) -> None:
     """Append one row to `event_log`. Fire-and-forget: returns immediately, errors
     swallowed. Secrets are scrubbed from `request` before it is stored.
+
+    `run_id` is the workflow run id (obs.call_context extracts it from the tool
+    body). It is the join key to call_records.run_id -- keep the name identical
+    in all three places or the audit trail silently stops correlating.
+
+    `id` and `ts` are intentionally NOT sent: the event_log table defaults them
+    (gen_random_uuid() / now()). Sending them from here would just be a second,
+    less reliable clock.
 
     `response` is stored verbatim (jsonb) — for get_load this DOES include
     MAX_BUY. event_log is internal audit only; never surface it to a carrier."""
@@ -186,7 +196,7 @@ def log_event(client: TwinClient, *, tool: str, status: str,
     values = {
         "tool": tool,
         "status": status,
-        "call_id": call_id,
+        "run_id": run_id,
         "mc_number": mc_number,
         "load_id": load_id,
         "request": _scrub(request or {}),
@@ -223,7 +233,9 @@ def upsert_carrier(client: TwinClient, *, mc_number: str,
         if existing:
             pk = {"id": existing["id"]}
             updates = dict(fields)
-            updates["last_seen"] = "now()"  # server default expr; adjust if Twin wants ISO
+            # ISO-8601 UTC, not the string "now()" -- this goes out as JSON, so a
+            # SQL expression would be stored verbatim (or rejected), not evaluated.
+            updates["last_seen"] = datetime.now(timezone.utc).isoformat()
             updates["call_count"] = int(existing.get("call_count") or 0) + 1
             client.update_row("carriers", pk, updates)
         else:

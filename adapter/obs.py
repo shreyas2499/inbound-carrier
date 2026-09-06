@@ -2,7 +2,10 @@
 
 Every /tools/* call MAY carry two optional fields in its JSON body:
 
-    call_id      the HappyRobot workflow RUN id -- ties adapter activity to one call
+    run_id       the HappyRobot workflow RUN id -- ties adapter activity to one call.
+                 Aliases call_id / callId are accepted on input; the field is
+                 always EMITTED as run_id, matching call_records.run_id and
+                 event_log.run_id so the three join without translation.
     environment  the workflow's `Execution Environment` global
                  (development | staging | production)
 
@@ -41,7 +44,7 @@ def call_context(body=None) -> dict:
     so the workflow can name the chip either way."""
     body = body if isinstance(body, dict) else {}
     return {
-        "call_id": _clean(body.get("call_id") or body.get("run_id") or body.get("callId")),
+        "run_id": _clean(body.get("run_id") or body.get("call_id") or body.get("callId")),
         "environment": _clean(body.get("environment") or body.get("env")),
     }
 
