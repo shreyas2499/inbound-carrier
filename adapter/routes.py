@@ -40,6 +40,14 @@ def _twin():
     return current_app.config["TWIN_CLIENT"]
 
 
+def _mirror_otp(mc_number) -> None:
+    """Push the current challenge state (never the code) into Twin. Fire-and-forget
+    -- the identity gate keeps running off the local store either way."""
+    snap = otp.snapshot(mc_number)
+    if snap:
+        twin_helper.upsert_otp_challenge(_twin(), **snap)
+
+
 def _as_int(value):
     """Best-effort int for values coming off the TMS wire. Returns None rather
     than raising -- a bad rate must never break a live call, it just means one
@@ -82,6 +90,7 @@ def index():
             "send_otp": "POST /tools/send_otp",
             "verify_otp": "POST /tools/verify_otp",
             "otp_peek": "GET /otp/peek?mc=<mc>",
+            "twin_probe": "POST /debug/twin_probe",
         },
     )
 
@@ -200,6 +209,15 @@ def evaluate_offer():
     run_id = call_context(body)["run_id"]
     rounds = call_state.bump_round(run_id, load_id)
 
+    # Written on EVERY exchange, not just the accept. loadboard_rate and rounds
+    # are known the moment a rate is discussed, and a no-deal call is exactly the
+    # one we most want a record of: `rounds > 0 with agreed_rate null` reads as
+    # "we negotiated and lost it", which is a different fact from a null row
+    # meaning the adapter never wrote at all.
+    updates = {
+        "loadboard_rate": _as_int(load.get("RATE")),
+        "rounds": rounds or None,
+    }
     if decision.get("action") == "accept":
         # The only moment anything knows all four money numbers at once. They are
         # written straight to Twin and NEVER returned: agreed_rate plus
@@ -207,13 +225,10 @@ def evaluate_offer():
         # the ceiling to the agent and therefore to the caller.
         agreed = _as_int(decision.get("rate"))
         ceiling = _as_int(max_buy)
-        twin_helper.update_call_record(
-            _twin(), run_id=run_id,
-            loadboard_rate=_as_int(load.get("RATE")),
-            agreed_rate=agreed,
-            margin_vs_ceiling=(ceiling - agreed) if (ceiling is not None and agreed is not None) else None,
-            rounds=rounds or None,
-        )
+        updates["agreed_rate"] = agreed
+        if ceiling is not None and agreed is not None:
+            updates["margin_vs_ceiling"] = ceiling - agreed
+    twin_helper.update_call_record(_twin(), run_id=run_id, **updates)
 
     # The response carries ONLY the next move — never MAX_BUY.
     return jsonify(**decision)
@@ -248,6 +263,58 @@ def book_load():
                            note="confirmed after ambiguous booking")
         return jsonify(status="uncertain", error="book_ambiguous",
                        message="booking could not be confirmed; needs review"), 503
+
+
+@bp.post("/debug/twin_probe")
+@require_api_key
+def debug_twin_probe():
+    """Diagnostic: prove the Twin REST contract from the one place that already
+    holds the credential and can reach the API.
+
+    Everything twin_helper does is fire-and-forget with errors swallowed, which is
+    right for a live call and useless for finding out whether the endpoint shape is
+    even correct. This runs the same three operations SYNCHRONOUSLY and reports
+    exactly what came back, so a wrong path or payload shape shows up as a real
+    error instead of a silently empty table.
+
+    Writes one throwaway row to `carriers` (mc_number 000001) and leaves it there
+    -- cleaning up is a DELETE, and that stays a human decision:
+        DELETE FROM carriers WHERE mc_number = '000001';
+    """
+    client = _twin()
+    if not getattr(client, "enabled", False):
+        return jsonify(ok=False, reason="twin_disabled",
+                       message="HAPPYROBOT_API_KEY is not set on this service"), 503
+
+    probe_mc = "000001"
+    steps = []
+
+    def _step(name, fn):
+        try:
+            result = fn()
+            steps.append({"step": name, "ok": True,
+                          "result": result if isinstance(result, (dict, list)) else str(result)[:400]})
+            return result
+        except Exception as exc:
+            steps.append({"step": name, "ok": False, "error": f"{type(exc).__name__}: {exc}"[:600]})
+            return None
+
+    _step("insert POST /twin/tables/carriers/rows",
+          lambda: client.insert_row("carriers", {"mc_number": probe_mc,
+                                                 "legal_name": "REST SHAPE PROBE"}))
+    found = _step("find (client-side scan of GET /twin/tables/carriers)",
+                  lambda: client.find_row("carriers", "mc_number", probe_mc))
+    if found and found.get("id"):
+        _step("update PATCH /twin/tables/carriers/rows",
+              lambda: client.update_row("carriers", {"id": found["id"]},
+                                        {"legal_name": "REST SHAPE PROBE 2"}))
+    else:
+        steps.append({"step": "update PATCH /twin/tables/carriers/rows", "ok": False,
+                      "error": "skipped — the row could not be read back"})
+
+    return jsonify(ok=all(s["ok"] for s in steps),
+                   api_base=getattr(client, "api_base", None),
+                   probe_mc=probe_mc, steps=steps)
 
 
 @bp.post("/debug/load_raw")
@@ -307,7 +374,9 @@ def send_otp():
     mc = body.get("mc_number") or body.get("mc") or body.get("MC_NUM")
     if not mc:
         return jsonify(error="missing_field", message="mc_number required"), 400
-    return jsonify(**otp.issue(mc))
+    result = otp.issue(mc, run_id=call_context(body)["run_id"])
+    _mirror_otp(mc)
+    return jsonify(**result)
 
 
 @bp.post("/tools/verify_otp")
@@ -321,7 +390,9 @@ def verify_otp():
     code = body.get("code") or body.get("otp")
     if not mc or code in (None, ""):
         return jsonify(error="missing_field", message="mc_number and code required"), 400
-    return jsonify(**otp.verify(mc, code))
+    result = otp.verify(mc, code)
+    _mirror_otp(mc)          # attempts / verified / verified_at all move here
+    return jsonify(**result)
 
 
 @bp.get("/otp/peek")

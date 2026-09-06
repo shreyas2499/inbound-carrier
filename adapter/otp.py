@@ -14,11 +14,13 @@ Env knobs (all optional, sane defaults):
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import secrets
 import sqlite3
 import threading
 import time
+from datetime import datetime, timezone
 from contextlib import contextmanager
 
 OTP_TTL = int(os.environ.get("OTP_TTL_SECONDS", "180"))
@@ -65,10 +67,32 @@ def _ensure_schema() -> None:
                     verified  INTEGER NOT NULL DEFAULT 0
                 )"""
             )
+            # Added after the first cut; the store lives in /tmp so a plain
+            # ALTER-if-missing is enough -- there is never old data to migrate.
+            existing = {row[1] for row in conn.execute("PRAGMA table_info(otp)")}
+            for column, ddl in (
+                ("code_salt", "ALTER TABLE otp ADD COLUMN code_salt TEXT"),
+                ("code_hash", "ALTER TABLE otp ADD COLUMN code_hash TEXT"),
+                ("verified_at", "ALTER TABLE otp ADD COLUMN verified_at REAL"),
+                ("run_id", "ALTER TABLE otp ADD COLUMN run_id TEXT"),
+            ):
+                if column not in existing:
+                    conn.execute(ddl)
         _initialized = True
 
 
-def issue(mc_number) -> dict:
+def _hash(code: str, salt: str) -> str:
+    """Salted SHA-256 of a code, for the durable copy in Twin.
+
+    Worth being honest about what this does and does not buy: the code space is
+    only 10^6, so anyone holding the hash AND the salt can brute-force it in
+    milliseconds. The hash stops a live secret sitting in plaintext in a shared
+    database; what actually protects the gate is the 3-minute TTL and the
+    attempt cap, both enforced here."""
+    return hashlib.sha256(f"{salt}:{code}".encode()).hexdigest()
+
+
+def issue(mc_number, run_id=None) -> dict:
     """Mint a fresh code for an MC, replacing any prior one. Returns only metadata
     -- never the code itself (the agent must not see it)."""
     _ensure_schema()
@@ -76,15 +100,20 @@ def issue(mc_number) -> dict:
     if not mc:
         return {"sent": False, "reason": "no MC number provided"}
     code = f"{secrets.randbelow(1000000):06d}"
+    salt = secrets.token_hex(8)
     now = time.time()
     with _db() as conn:
         conn.execute(
-            """INSERT INTO otp (mc, code, created, expires, attempts, verified)
-               VALUES (?, ?, ?, ?, 0, 0)
+            """INSERT INTO otp (mc, code, created, expires, attempts, verified,
+                                code_salt, code_hash, verified_at, run_id)
+               VALUES (?, ?, ?, ?, 0, 0, ?, ?, NULL, ?)
                ON CONFLICT(mc) DO UPDATE SET
                    code=excluded.code, created=excluded.created,
-                   expires=excluded.expires, attempts=0, verified=0""",
-            (mc, code, now, now + OTP_TTL),
+                   expires=excluded.expires, attempts=0, verified=0,
+                   code_salt=excluded.code_salt, code_hash=excluded.code_hash,
+                   verified_at=NULL, run_id=excluded.run_id""",
+            (mc, code, now, now + OTP_TTL, salt, _hash(code, salt),
+             str(run_id) if run_id else None),
         )
     return {"sent": True, "mc_number": mc, "expires_in": OTP_TTL, "ttl": OTP_TTL}
 
@@ -142,8 +171,45 @@ def verify(mc_number, code) -> dict:
             return {"verified": False, "reason": "too_many_attempts"}
         if secrets.compare_digest(str(real), submitted):
             if not verified:
-                conn.execute("UPDATE otp SET verified=1 WHERE mc=?", (mc,))
+                conn.execute("UPDATE otp SET verified=1, verified_at=? WHERE mc=?",
+                             (now, mc))
             return {"verified": True, "reason": "ok"}
         conn.execute("UPDATE otp SET attempts=attempts+1 WHERE mc=?", (mc,))
         remaining = max(0, OTP_MAX_ATTEMPTS - (attempts + 1))
         return {"verified": False, "reason": "incorrect", "attempts_remaining": remaining}
+
+
+def snapshot(mc_number) -> dict | None:
+    """The audit view of a carrier's current challenge -- everything EXCEPT the
+    code. This is what gets mirrored into Twin's `otp_challenges`; the plaintext
+    stays in this process-local store because it is the demo's delivery channel
+    (the device page reads it back), and a live code has no business sitting in a
+    shared database."""
+    _ensure_schema()
+    mc = _digits(mc_number)
+    if not mc:
+        return None
+    with _db() as conn:
+        row = conn.execute(
+            """SELECT code_hash, created, expires, attempts, verified, verified_at, run_id
+               FROM otp WHERE mc=?""", (mc,)
+        ).fetchone()
+    if not row:
+        return None
+    code_hash, created, expires, attempts, verified, verified_at, run_id = row
+    return {
+        "mc_number": mc,
+        "code_hash": code_hash,
+        "run_id": run_id,
+        "created_at": _iso(created),
+        "expires_at": _iso(expires),
+        "attempts": int(attempts or 0),
+        "verified": bool(verified),
+        "verified_at": _iso(verified_at),
+    }
+
+
+def _iso(epoch):
+    if epoch in (None, ""):
+        return None
+    return datetime.fromtimestamp(float(epoch), tz=timezone.utc).isoformat()

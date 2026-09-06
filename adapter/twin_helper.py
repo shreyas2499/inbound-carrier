@@ -236,6 +236,36 @@ def update_call_record(client: TwinClient, *, run_id: Optional[str],
               background=background)
 
 
+def upsert_otp_challenge(client: TwinClient, *, mc_number: str,
+                         background: bool = True, **snapshot: Any) -> None:
+    """Mirror a carrier's current OTP challenge into `otp_challenges`, keyed on
+    mc_number (one live challenge per carrier, so a re-send replaces the row).
+
+    MIRROR, not source of truth. Verification still runs against the adapter's
+    local store, for two reasons: the device page has to read the code back, so a
+    plaintext copy must live somewhere the shared database is the wrong place for;
+    and making the identity gate depend on a synchronous Twin round-trip would
+    mean a Twin outage stops carriers being verified at all. This table is the
+    durable audit trail -- who was challenged, when, how many attempts, did it
+    clear -- and `code_hash` is a salted digest, never the code.
+
+    Twin has no server-side filter, so this scans for the existing row the same
+    way upsert_carrier does. Fine at one row per carrier."""
+    if not client.enabled or not mc_number:
+        return
+
+    def _do() -> None:
+        fields = {k: v for k, v in snapshot.items() if v is not None}
+        fields.pop("mc_number", None)
+        existing = client.find_row("otp_challenges", "mc_number", mc_number)
+        if existing:
+            client.update_row("otp_challenges", {"id": existing["id"]}, fields)
+        else:
+            client.insert_row("otp_challenges", {"mc_number": mc_number, **fields})
+
+    _dispatch(_do, background=background)
+
+
 def upsert_carrier(client: TwinClient, *, mc_number: str,
                    dot_number: Optional[str] = None, legal_name: Optional[str] = None,
                    authority_eligible: Optional[bool] = None, phone: Optional[str] = None,

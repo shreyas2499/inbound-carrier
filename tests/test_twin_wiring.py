@@ -114,11 +114,20 @@ def test_search_still_hides_rate_and_ceiling(client):
 def test_accept_writes_the_money_columns_to_twin(client):
     _negotiate(client, [None, 2900, 2850, 2800, 2750])
     updates = client.twin.rows("update", "call_records")
-    assert len(updates) == 1, "exactly one write, on the accept"
-    _, _, pk, vals = updates[0]
+    assert len(updates) == 5, "one write per exchange"
+    _, _, pk, vals = updates[-1]
     assert pk == {"run_id": RUN}
     assert vals == {"loadboard_rate": 2600, "agreed_rate": 2750,
                     "margin_vs_ceiling": 52, "rounds": 5}
+
+
+def test_loadboard_rate_and_rounds_land_before_any_deal(client):
+    """The first exchange already fills the two columns that are knowable then,
+    so a call that dies mid-negotiation still leaves evidence it happened."""
+    _negotiate(client, [None])
+    _, _, _, vals = client.twin.rows("update", "call_records")[0]
+    assert vals == {"loadboard_rate": 2600, "rounds": 1}
+    assert "agreed_rate" not in vals and "margin_vs_ceiling" not in vals
 
 
 def test_ceiling_never_reaches_the_agent(client):
@@ -129,9 +138,16 @@ def test_ceiling_never_reaches_the_agent(client):
     assert "2802" not in blob  # the ceiling itself, in any field
 
 
-def test_no_money_write_when_the_call_ends_without_a_deal(client):
-    _negotiate(client, [None, 3500])  # carrier holds way above; never accepted
-    assert client.twin.rows("update", "call_records") == []
+def test_no_deal_records_the_negotiation_but_no_agreed_rate(client):
+    """A no-deal is a real outcome, not a missing one. rounds and loadboard_rate
+    are written; agreed_rate and margin stay absent because there was no deal."""
+    _negotiate(client, [None, 2900, 2850, 2800, 3500])  # holds above the ceiling
+    updates = client.twin.rows("update", "call_records")
+    assert updates, "a lost negotiation must still leave a trail"
+    _, _, _, vals = updates[-1]
+    assert vals["rounds"] == 5 and vals["loadboard_rate"] == 2600
+    assert "agreed_rate" not in vals
+    assert "margin_vs_ceiling" not in vals
 
 
 def test_no_write_without_a_run_id(client):
@@ -155,7 +171,7 @@ def test_rounds_counts_exchanges_not_the_agents_claim(client):
         if offer is not None:
             body["carrier_offer"] = offer
         client.post("/tools/evaluate_offer", headers=HEADERS, json=body)
-    _, _, _, vals = client.twin.rows("update", "call_records")[0]
+    _, _, _, vals = client.twin.rows("update", "call_records")[-1]
     assert vals["rounds"] == 6
     assert vals["agreed_rate"] == 2750
 
@@ -216,3 +232,53 @@ def test_twin_failure_cannot_break_a_tool_call(client):
                           "carrier_offer": 2750, "run_id": RUN})
     assert r.status_code == 200
     assert r.get_json()["action"] == "accept"
+
+
+# --- 5. otp_challenges mirror -------------------------------------------------
+
+def test_send_otp_mirrors_the_challenge_without_the_code(client):
+    r = client.post("/tools/send_otp", headers=HEADERS,
+                    json={"mc_number": "872144", "run_id": RUN,
+                          "environment": "development"})
+    assert r.get_json()["sent"] is True
+    assert "code" not in r.get_json(), "the agent must never receive the code"
+
+    rows = client.twin.rows("insert", "otp_challenges")
+    assert len(rows) == 1
+    row = rows[0][2]
+    assert row["mc_number"] == "872144"
+    assert row["run_id"] == RUN
+    assert row["verified"] is False and row["attempts"] == 0
+    assert len(row["code_hash"]) == 64          # sha-256 hex
+    assert "code" not in row and "code_salt" not in row
+
+
+def test_the_live_code_never_reaches_twin(client):
+    from adapter import otp
+    client.post("/tools/send_otp", headers=HEADERS,
+                json={"mc_number": "872144", "run_id": RUN})
+    code = otp.peek("872144")["code"]            # what the device page shows
+    assert code not in json.dumps(client.twin.writes)
+
+
+def test_verify_mirrors_the_cleared_challenge(client):
+    from adapter import otp
+    client.post("/tools/send_otp", headers=HEADERS,
+                json={"mc_number": "872144", "run_id": RUN})
+    code = otp.peek("872144")["code"]
+    r = client.post("/tools/verify_otp", headers=HEADERS,
+                    json={"mc_number": "872144", "code": code, "run_id": RUN})
+    assert r.get_json()["verified"] is True
+
+    rows = client.twin.rows("insert", "otp_challenges")
+    assert rows[-1][2]["verified"] is True
+    assert rows[-1][2]["verified_at"]
+
+
+def test_wrong_code_mirrors_the_attempt_count(client):
+    client.post("/tools/send_otp", headers=HEADERS,
+                json={"mc_number": "872144", "run_id": RUN})
+    client.post("/tools/verify_otp", headers=HEADERS,
+                json={"mc_number": "872144", "code": "000000", "run_id": RUN})
+    row = client.twin.rows("insert", "otp_challenges")[-1][2]
+    assert row["attempts"] == 1 and row["verified"] is False
