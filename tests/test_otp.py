@@ -127,13 +127,17 @@ def test_expired_verified_row_stops_showing_as_verified(store):
     assert otp.peek(store, MC) == {"status": "none"}
 
 
-def test_a_resend_supersedes_the_old_code_and_resets_attempts(store):
+def test_a_resend_supersedes_the_old_code_but_KEEPS_the_attempt_count(store):
+    """This test used to assert attempts reset to 0 on a resend, which is exactly
+    the hole: it made the attempt lock unreachable. The resend still replaces the
+    CODE -- the old one must stop working -- it just does not hand back a fresh
+    budget of guesses."""
     otp.issue(store, MC)
     first = _code(store)
     otp.verify(store, MC, "000000")
     otp.issue(store, MC)
     assert len(store.rows) == 1, "one live challenge per carrier"
-    assert store.rows[0]["attempts"] == 0
+    assert store.rows[0]["attempts"] == 1, "the burnt attempt must carry forward"
     assert otp.verify(store, MC, first)["verified"] is False
 
 
@@ -161,3 +165,43 @@ def test_a_disabled_store_issues_nothing(store):
 
     assert otp.issue(Off(), MC)["reason"] == "store_unavailable"
     assert otp.verify(Off(), MC, "123456")["reason"] == "store_unavailable"
+
+
+# --- the attempt budget belongs to the carrier, not to the code ---------------
+
+def test_resending_a_code_does_not_reset_the_attempt_counter(store):
+    """Guess twice, ask for a fresh code, guess twice more -- if each issue reset
+    the counter that is unlimited guesses at a six-digit secret, paced only by how
+    often the caller says "send it again" (real bug, run a19072a9: remaining went
+    3, 2, [resend], 3, 2, [resend], 3)."""
+    otp.issue(store, MC)
+    otp.verify(store, MC, "000001")
+    r = otp.verify(store, MC, "000002")
+    assert r["attempts_remaining"] == otp.OTP_MAX_ATTEMPTS - 2
+
+    otp.issue(store, MC)                       # resend
+    r = otp.verify(store, MC, "000003")
+    assert r["attempts_remaining"] == otp.OTP_MAX_ATTEMPTS - 3, \
+        "the resend handed back a fresh budget"
+
+
+def test_a_locked_challenge_cannot_be_unlocked_by_resending(store):
+    otp.issue(store, MC)
+    for i in range(otp.OTP_MAX_ATTEMPTS):
+        otp.verify(store, MC, f"00000{i}")
+    assert otp.verify(store, MC, "999999")["reason"] == "too_many_attempts"
+
+    resend = otp.issue(store, MC)
+    assert resend["sent"] is False
+    assert resend["reason"] == "too_many_attempts"
+    # and the gate is still shut
+    assert otp.verify(store, MC, _code(store))["verified"] is False
+
+
+def test_the_correct_code_still_passes_after_a_resend(store):
+    """The lock must not become a foot-gun for an honest carrier who mistyped
+    once and asked for a new code."""
+    otp.issue(store, MC)
+    otp.verify(store, MC, "000001")
+    otp.issue(store, MC)
+    assert otp.verify(store, MC, _code(store)) == {"verified": True, "reason": "ok"}

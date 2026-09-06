@@ -367,7 +367,9 @@ def test_a_resend_replaces_the_previous_challenge(client):
 
     rows = client.twin.stored("otp_challenges")
     assert len(rows) == 1, "one live challenge per carrier, not a new row each time"
-    assert rows[0]["attempts"] == 0, "a re-send resets the attempt count"
+    # NOT reset: the attempt budget is the carrier's, not the code's. Resetting it
+    # here is what let a caller guess forever by asking for a new code each time.
+    assert rows[0]["attempts"] == 1, "the burnt attempt must survive the re-send"
     assert rows[0]["verified"] is False
     old = client.post("/tools/verify_otp", headers=HEADERS,
                       json={"mc_number": "872144", "code": first}).get_json()

@@ -115,6 +115,23 @@ def issue(client, mc_number, run_id=None) -> dict:
     try:
         existing = _row(client, mc)
         if existing:
+            # THE ATTEMPT BUDGET BELONGS TO THE CARRIER, NOT TO THE CODE.
+            # Resetting attempts on every issue made the lock worthless: guess
+            # twice, ask for a fresh code, guess twice more, forever. A live run
+            # showed exactly that -- remaining went 3, 2, [resend], 3, 2,
+            # [resend], 3 -- which is unlimited guesses at a six-digit secret,
+            # just paced by how often the caller says "send it again".
+            # So while a challenge is still live its attempt count carries
+            # forward, and a locked one cannot be unlocked by asking for another
+            # code. Only letting the window fully lapse starts a fresh budget --
+            # that bounds an attacker to OTP_MAX_ATTEMPTS guesses per TTL rather
+            # than per request, which is the usual shape for this.
+            prior_expiry = _parse(existing.get("expires_at"))
+            still_live = prior_expiry is not None and _now() < prior_expiry
+            attempts = int(existing.get("attempts") or 0) if still_live else 0
+            if attempts >= OTP_MAX_ATTEMPTS:
+                return {"sent": False, "reason": "too_many_attempts"}
+            values["attempts"] = attempts
             client.update_row(_TABLE, {"id": existing["id"]}, values)
         else:
             client.insert_row(_TABLE, {"mc_number": mc, **values})

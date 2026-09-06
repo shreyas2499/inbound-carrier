@@ -64,10 +64,20 @@ def evaluate_offer(max_buy, round_number, carrier_counter=None) -> dict:
             return {"action": "accept", "rate": carrier_counter}
         return {"action": "counter", "rate": our_offer}
 
-    # Round 4+ (the carrier's response to our final 97% offer): accept anything up to
-    # the true ceiling to save the load. Above the ceiling we cannot go -- reject
-    # their number, but hand back OUR final offer (97%) as the rate so the agent has
-    # a concrete "best I can do" to hold on, never the carrier's over-ceiling number.
-    if carrier_counter <= max_buy:
+    final_rung = round(max_buy * OFFER_LADDER[LAST_LADDER_ROUND])
+
+    # Round 4 -- and ONLY round 4 -- is the carrier's response to our final 97%
+    # offer, so acceptance stretches to the true ceiling to save the load.
+    if r == LAST_LADDER_ROUND + 1 and carrier_counter <= max_buy:
         return {"action": "accept", "rate": carrier_counter}
-    return {"action": "reject", "rate": round(max_buy * OFFER_LADDER[LAST_LADDER_ROUND])}
+
+    # Round 5+ is a RE-TRADE, and the stretch is not on offer twice. A carrier who
+    # keeps raising after we have already come up to meet them is not negotiating,
+    # they are ratcheting -- and because each call is stateless, "is this under the
+    # ceiling?" would happily say yes to 790, then 820, then 860, then 900 in a row
+    # (real bug, run 0752609b: six accepts climbing to $900 against a $901 ceiling).
+    # Past the stretch we hold at our final rung: take anything at or below it,
+    # refuse anything above it, and keep quoting the same number.
+    if carrier_counter <= final_rung:
+        return {"action": "accept", "rate": carrier_counter}
+    return {"action": "reject", "rate": final_rung}
