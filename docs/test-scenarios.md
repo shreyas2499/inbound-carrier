@@ -110,7 +110,9 @@ Regression cases — several of these were real bugs.
 | 4.23 | Agent claims a booking reference | ❌ never — no live commit happens; a senior rep finalizes. No ref exists to say | ☐ |
 | 4.24 | Ladder must be walked to the last rung before "best I can do" | The agent may only say it is at its limit AFTER evaluate_offer has returned the round-3 rung. Saying it earlier gives the caller a worse deal than the policy allows | ☐ |
 | 4.25 | Accepted rate is a number named several turns earlier | Agent ATTRIBUTES it and asks — "the twenty-five fifty you mentioned earlier, does that work?" — never "we have X agreed". The caller has not agreed to that figure in this turn and it otherwise sounds invented (3ffe77c1: accepted 2550 three offers after it was named, and it read as coming from nowhere) | ☐ |
-| 4.26 | Carrier pushes back with no number, twice running | Each pushback advances a rung carrying their LAST named number; round 4+ then accepts it if it is under the ceiling | ✅ 3ffe77c1 |
+| 4.26 | Carrier pushes back with no number ("go higher", "what's your best?") | Agent ASKS for a figure — "what rate would you need?" — and does NOT call evaluate_offer. No number is ever substituted: not ours, not one they said turns ago | ☐ |
+| 4.27 | Ratcheting carrier: each answer raises the ask | Capped at the 97% rung. The ceiling stretch is offered ONCE at round 4; round 5+ holds (real bug, 0752609b: accepted 790→820→860→900 against a 901 ceiling) | ✅ 7ba5f3cc (server cap held at 874) |
+| 4.28 | Agent sends its OWN last offer as carrier_offer | ❌ never — the policy accepts the figure we just quoted as though the caller proposed it, burning rungs before they have bid (0752609b r1/r2, 7ba5f3cc r1) | ☐ |
 | 3.11 | "Reefer" misheard as "referral" / "refill" / "reaper" | Agent offers the nearest match ("Did you mean a reefer?") rather than re-reading the three options. 753e5b3d got this right, 35fcfa32 re-listed twice and burned ~17s | ☐ |
 
 ## 5. Call flow, turn-taking, ending
@@ -337,6 +339,30 @@ and the first run where every rung was delivered.
 Closed $49 under a $2,599 ceiling. Worth noting the ladder now behaves correctly
 in both directions: 35fcfa32 proved it must not stall short of the last rung,
 3ffe77c1 proves it walks all of them and then accepts at the ceiling.
+
+---
+
+
+**7ba5f3cc** (6 Sep, flatbed OH->TN, no deal) — server fixes landed, prompt fixes
+had not been published yet.
+
+| Scenario | Result |
+|---|---|
+| OTP attempt budget survives a resend | ✅ **fixed** — `rem=3, 2, [resend], 1`, then the correct code passed. The resend no longer hands back a fresh budget |
+| 4.27 ratchet capped | ✅ **fixed server-side** — 766 / 790 / 845 / 870 accepted, then rounds 5, 6, 7 all held at `reject @874`. Under the old policy 890 would have been accepted |
+| 4.28 agent sends its own offer as carrier_offer | ❌ still happening — `r=1 offer=766` is our own opening number. The prompt rule forbidding this was written but not yet published to the Agent Prompt node |
+
+The split is the lesson: the two fixes that lived in the ADAPTER took effect the
+moment the code deployed, and the two that lived in the PROMPT did nothing until
+the node was republished. Same commit, same intent, different delivery path — and
+the run shows exactly which half arrived.
+
+Prompt rule reworked after this run, on Shreyas's suggestion, and it is a better
+rule than the one it replaces: an open-ended pushback now earns a QUESTION ("what
+rate would you need?") rather than a substituted number. The old rule carried the
+caller's last named figure forward, which worked (3ffe77c1) but put words in
+their mouth; the new one guarantees every `carrier_offer` is a number the caller
+just said.
 
 ---
 
