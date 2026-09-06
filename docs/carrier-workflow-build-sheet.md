@@ -19,7 +19,7 @@ I built the Option A agent + system prompt and started the `verify_carrier` tool
 ## 1. Backend — use these exact values
 
 - **Base URL:** `https://inbound-carrier-production-aeb4.up.railway.app`
-- **Auth header (every tool's POST):** `X-API-Key: adp-ObDvYytWwb1Fbrepex49WUsY6p3rhHbL`  *(same key already in your `.env` / Railway)*
+- **Auth header (every tool's POST):** `X-API-Key: <ADAPTER_API_KEY>`  *(the literal value lives ONLY in `.env` and in Railway's service variables — never commit it here)*
 - **Also add header:** `Content-Type: application/json`
 - All tool paths carry a **`/tools/`** prefix.
 
