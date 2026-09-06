@@ -1,70 +1,163 @@
-"""Unit tests for the OTP store (issue / peek / verify)."""
-import time
+"""The OTP gate itself, exercised directly against its store.
+
+otp.py now talks to Twin rather than a local SQLite file, so these use a small
+in-memory stand-in for the store. The behaviour under test is unchanged and is
+the security-critical part: a code must be issued, live, under the attempt cap,
+and an exact match -- nothing conversational can substitute for any of those.
+"""
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from adapter import otp
 
+MC = "872144"
+
+
+class MemoryStore:
+    enabled = True
+
+    def __init__(self):
+        self.rows = []
+        self._n = 0
+
+    def insert_row(self, table, values):
+        self._n += 1
+        row = {"id": f"r{self._n}", **values}
+        self.rows.append(row)
+        return row
+
+    def update_row(self, table, primary_key, updates):
+        for row in self.rows:
+            if all(row.get(k) == v for k, v in primary_key.items()):
+                row.update(updates)
+                return row
+        return None
+
+    def find_row(self, table, column, value, **kw):
+        return next((r for r in self.rows if str(r.get(column)) == str(value)), None)
+
 
 @pytest.fixture
-def fresh_db(tmp_path, monkeypatch):
-    """Point the store at a throwaway DB and reset its init/config per test."""
-    monkeypatch.setattr(otp, "_DB_PATH", str(tmp_path / "otp.db"))
-    monkeypatch.setattr(otp, "_initialized", False)
-    monkeypatch.setattr(otp, "OTP_TTL", 180)
-    monkeypatch.setattr(otp, "OTP_MAX_ATTEMPTS", 4)
-    yield
+def store():
+    otp._peek_cache._store.clear()
+    return MemoryStore()
 
 
-def test_peek_before_issue_is_none(fresh_db):
-    assert otp.peek("872144") == {"status": "none"}
+def _code(store):
+    return store.rows[0]["code"]
 
 
-def test_issue_hides_code_but_peek_reveals(fresh_db):
-    r = otp.issue("MC 872144")  # non-digits stripped
-    assert r["sent"] is True and r["mc_number"] == "872144"
-    assert "code" not in r  # the agent must never receive the code
-    p = otp.peek("872144")
-    assert p["status"] == "active"
-    assert len(p["code"]) == 6 and p["code"].isdigit()
-    assert 0 < p["expires_in"] <= 180
+def _expire(store):
+    """Age the challenge past its TTL without waiting for it."""
+    store.rows[0]["expires_at"] = (
+        datetime.now(tz=timezone.utc) - timedelta(seconds=1)).isoformat()
+    otp._peek_cache._store.clear()
 
 
-def test_correct_code_verifies_and_is_single_use(fresh_db):
-    otp.issue("872144")
-    code = otp.peek("872144")["code"]
-    assert otp.verify("872144", code) == {"verified": True, "reason": "ok"}
-    # consumed: peek now reports verified, and re-verify stays true (idempotent)
-    assert otp.peek("872144") == {"status": "verified", "verified": True}
-    assert otp.verify("872144", code)["verified"] is True
+def test_peek_before_any_code_is_issued(store):
+    assert otp.peek(store, MC) == {"status": "none"}
 
 
-def test_wrong_code_counts_down_then_locks(fresh_db):
-    otp.issue("111111")
-    real = otp.peek("111111")["code"]
-    bad = "000000" if real != "000000" else "999999"
-    remaining = [otp.verify("111111", bad)["attempts_remaining"] for _ in range(4)]
-    assert remaining == [3, 2, 1, 0]
-    assert otp.verify("111111", bad)["reason"] == "too_many_attempts"
-    # once locked, even the correct code is refused
-    assert otp.verify("111111", real)["reason"] == "too_many_attempts"
+def test_issue_returns_metadata_but_never_the_code(store):
+    result = otp.issue(store, MC, run_id="run-1")
+    assert result["sent"] is True
+    assert "code" not in result
+    assert store.rows[0]["run_id"] == "run-1"
 
 
-def test_verify_without_issue_is_rejected(fresh_db):
-    assert otp.verify("555555", "123456") == {"verified": False, "reason": "no_code_issued"}
+def test_the_device_can_read_the_code_but_the_agent_cannot(store):
+    otp.issue(store, MC)
+    seen = otp.peek(store, MC)
+    assert seen["status"] == "active"
+    assert seen["code"] == _code(store)
+    assert 0 < seen["expires_in"] <= otp.OTP_TTL
 
 
-def test_expired_code_is_gone(fresh_db, monkeypatch):
-    monkeypatch.setattr(otp, "OTP_TTL", 1)
-    otp.issue("222222")
-    time.sleep(1.1)
-    assert otp.peek("222222") == {"status": "none"}
-    assert otp.verify("222222", "123456")["reason"] == "expired"
+def test_correct_code_verifies_once_and_stays_verified_for_peek(store):
+    otp.issue(store, MC)
+    assert otp.verify(store, MC, _code(store)) == {"verified": True, "reason": "ok"}
+    assert otp.peek(store, MC)["status"] == "verified"
 
 
-def test_missing_inputs(fresh_db):
-    assert otp.issue("")["sent"] is False
-    assert otp.peek("") == {"status": "none"}
-    assert otp.verify("", "123456")["verified"] is False
-    otp.issue("333333")
-    assert otp.verify("333333", "")["verified"] is False
+def test_a_verified_row_does_not_wave_through_a_later_wrong_code(store):
+    """The bug that let a dummy code pass: an already-verified challenge must not
+    short-circuit a fresh check."""
+    otp.issue(store, MC)
+    otp.verify(store, MC, _code(store))
+    assert otp.verify(store, MC, "000000")["verified"] is False
+
+
+def test_wrong_codes_count_down_then_lock(store):
+    otp.issue(store, MC)
+    for expected in (3, 2, 1, 0):
+        result = otp.verify(store, MC, "000000")
+        assert result["verified"] is False
+        assert result["attempts_remaining"] == expected
+    assert otp.verify(store, MC, "000000")["reason"] == "too_many_attempts"
+
+
+def test_the_locked_out_carrier_cannot_then_use_the_real_code(store):
+    otp.issue(store, MC)
+    real = _code(store)
+    for _ in range(otp.OTP_MAX_ATTEMPTS):
+        otp.verify(store, MC, "000000")
+    assert otp.verify(store, MC, real)["reason"] == "too_many_attempts"
+
+
+def test_verify_without_an_issued_code(store):
+    assert otp.verify(store, MC, "123456") == {"verified": False,
+                                               "reason": "no_code_issued"}
+
+
+def test_expired_code_is_rejected_and_hidden(store):
+    otp.issue(store, MC)
+    real = _code(store)
+    _expire(store)
+    assert otp.verify(store, MC, real) == {"verified": False, "reason": "expired"}
+    assert otp.peek(store, MC) == {"status": "none"}, "an expired code must not display"
+
+
+def test_expired_verified_row_stops_showing_as_verified(store):
+    otp.issue(store, MC)
+    otp.verify(store, MC, _code(store))
+    _expire(store)
+    assert otp.peek(store, MC) == {"status": "none"}
+
+
+def test_a_resend_supersedes_the_old_code_and_resets_attempts(store):
+    otp.issue(store, MC)
+    first = _code(store)
+    otp.verify(store, MC, "000000")
+    otp.issue(store, MC)
+    assert len(store.rows) == 1, "one live challenge per carrier"
+    assert store.rows[0]["attempts"] == 0
+    assert otp.verify(store, MC, first)["verified"] is False
+
+
+def test_missing_inputs(store):
+    assert otp.issue(store, "")["sent"] is False
+    assert otp.verify(store, "", "123456")["reason"] == "missing_mc_or_code"
+    assert otp.verify(store, MC, "")["reason"] == "missing_mc_or_code"
+    assert otp.peek(store, "") == {"status": "none"}
+
+
+def test_the_gate_fails_closed_when_the_store_is_down(store):
+    """Single-store design: an unreachable store must deny, never grant."""
+    otp.issue(store, MC)
+
+    class Broken(MemoryStore):
+        def find_row(self, *a, **k): raise RuntimeError("twin down")
+
+    otp._peek_cache._store.clear()
+    assert otp.verify(Broken(), MC, "123456")["reason"] == "store_unavailable"
+
+
+def test_a_disabled_store_issues_nothing(store):
+    class Off(MemoryStore):
+        enabled = False
+
+    assert otp.issue(Off(), MC)["reason"] == "store_unavailable"
+    assert otp.verify(Off(), MC, "123456")["reason"] == "store_unavailable"

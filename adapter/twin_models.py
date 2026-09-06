@@ -127,11 +127,11 @@ class CallRecord:
     loadboard_rate: Optional[int]      # int4      posted rate, whole dollars
     agreed_rate: Optional[int]         # int4      final rate, written only on an 'accept'
     margin_vs_ceiling: Optional[int]   # int4      max_buy - agreed_rate. NEVER max_buy itself.
-    rounds: Optional[int]              # int4      offers actually made, counted server-side per
-                                       #           (run_id, load_id). Trustworthy in a way that
-                                       #           evaluate_offer.round is not: that field is the
-                                       #           AGENT's own count of itself, and we have a run
-                                       #           where it skipped a rung.
+    # rounds is NOT a column here any more. event_log already holds one row per
+    # evaluate_offer call, so the count is DERIVED by the `call_records_v` view
+    # rather than maintained as a second copy. Still trustworthy in the way
+    # evaluate_offer.round is not -- that field is the AGENT's own count of
+    # itself, and we have a run where it skipped a rung.
 
     # NOTE -- booking_ref is deliberately absent. POST /tools/book_load exists on
     # the adapter and returns one, but NO workflow tool node calls it: the agent
@@ -207,23 +207,28 @@ class Carrier:
 @dataclass
 class OtpChallenge:
     """One identity-verification challenge for a carrier, keyed on mc_number and
-    upserted (a new send_otp replaces the carrier's prior code) -- the Twin
-    equivalent of the adapter's live SQLite store in otp.py. Move the OTP state
-    here when it must survive adapter restarts or be shared across replicas
-    (the /tmp SQLite store is per-container and ephemeral). Links to
-    [carriers].mc_number for the contact-of-record.
+    upserted (a new send_otp replaces the carrier's prior code). This is now the
+    ONLY store -- adapter/otp.py reads and writes it directly, there is no local
+    copy. Links to [carriers].mc_number for the contact-of-record.
 
-    SECURITY: the in-memory demo store keeps the code in the clear, which is fine
-    for a short-lived process-local secret. In a shared DB the code should be
-    HASHED at rest -- hash `code` (e.g. sha256 + per-row salt) before writing,
-    and compare hashes on verify. Never store a live plaintext OTP in Twin."""
+    Consequences of being the only store, all accepted knowingly: the code is held
+    in plaintext (see below), identity verification depends on Twin being
+    reachable and fails CLOSED if it is not, and every read is a bounded
+    client-side scan because Twin has no server-side filter."""
 
     id: str                            # uuid      pk, DB default gen_random_uuid()
     mc_number: str                     # text      natural key, UNIQUE NOT NULL -> carriers.mc_number
-    code_hash: str                     # text      NOT NULL. Named for what it must contain: the
-                                       #           column is the constraint. A column called `code`
-                                       #           plus a comment saying "hash it first" is an
-                                       #           invitation to store a live secret in the clear.
+    code: str                          # text      the live one-time code, IN PLAINTEXT.
+                                       #           An earlier revision stored only a digest and this
+                                       #           comment forbade the clear text. That rule was
+                                       #           dropped deliberately, not forgotten: /otp/peek is
+                                       #           the demo's delivery channel and has to read the
+                                       #           code back, and with no second store there is
+                                       #           nowhere else for it to live. It is tolerable ONLY
+                                       #           because /otp/peek is already public and
+                                       #           unauthenticated -- the code is readable by anyone
+                                       #           who knows the MC for its 3-minute life, by design.
+                                       #           A real deployment sends by SMS and stores a digest.
     run_id: Optional[str]              # text      -> call_records.run_id (audit)
     created_at: datetime               # timestamp when issued (UTC), DB default now()
     expires_at: datetime               # timestamp issued + TTL (UTC)

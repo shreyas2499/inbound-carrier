@@ -13,7 +13,7 @@ import os
 
 from flask import Blueprint, current_app, jsonify, request
 
-from adapter import call_state, fmcsa, otp, twin_helper
+from adapter import fmcsa, otp, twin_helper
 from adapter.auth import require_api_key
 from adapter.negotiation import evaluate_offer as evaluate_offer_policy
 from adapter.obs import CORRELATION_KEYS, call_context
@@ -38,14 +38,6 @@ def _cache():
 
 def _twin():
     return current_app.config["TWIN_CLIENT"]
-
-
-def _mirror_otp(mc_number) -> None:
-    """Push the current challenge state (never the code) into Twin. Fire-and-forget
-    -- the identity gate keeps running off the local store either way."""
-    snap = otp.snapshot(mc_number)
-    if snap:
-        twin_helper.upsert_otp_challenge(_twin(), **snap)
 
 
 def _as_int(value):
@@ -205,19 +197,17 @@ def evaluate_offer():
         return jsonify(error="no_ceiling", message="ceiling not available for this token"), 409
     decision = evaluate_offer_policy(max_buy, round_number, carrier_offer)
 
-    # Count the exchange ourselves rather than trusting the agent's `round`.
     run_id = call_context(body)["run_id"]
-    rounds = call_state.bump_round(run_id, load_id)
 
-    # Written on EVERY exchange, not just the accept. loadboard_rate and rounds
-    # are known the moment a rate is discussed, and a no-deal call is exactly the
-    # one we most want a record of: `rounds > 0 with agreed_rate null` reads as
-    # "we negotiated and lost it", which is a different fact from a null row
-    # meaning the adapter never wrote at all.
-    updates = {
-        "loadboard_rate": _as_int(load.get("RATE")),
-        "rounds": rounds or None,
-    }
+    # `rounds` is NOT written here. event_log already gets one row per
+    # evaluate_offer call, so the count is derivable (see the call_records_v view)
+    # instead of being a second copy that has to be kept in step. One store, one
+    # source of truth, and no read-modify-write race between gunicorn workers.
+    #
+    # loadboard_rate IS written on every exchange, not just the accept: it is known
+    # the moment a rate is discussed, and a call that dies mid-negotiation is
+    # exactly the one worth having a record of.
+    updates = {"loadboard_rate": _as_int(load.get("RATE"))}
     if decision.get("action") == "accept":
         # The only moment anything knows all four money numbers at once. They are
         # written straight to Twin and NEVER returned: agreed_rate plus
@@ -374,9 +364,7 @@ def send_otp():
     mc = body.get("mc_number") or body.get("mc") or body.get("MC_NUM")
     if not mc:
         return jsonify(error="missing_field", message="mc_number required"), 400
-    result = otp.issue(mc, run_id=call_context(body)["run_id"])
-    _mirror_otp(mc)
-    return jsonify(**result)
+    return jsonify(**otp.issue(_twin(), mc, run_id=call_context(body)["run_id"]))
 
 
 @bp.post("/tools/verify_otp")
@@ -390,9 +378,7 @@ def verify_otp():
     code = body.get("code") or body.get("otp")
     if not mc or code in (None, ""):
         return jsonify(error="missing_field", message="mc_number and code required"), 400
-    result = otp.verify(mc, code)
-    _mirror_otp(mc)          # attempts / verified / verified_at all move here
-    return jsonify(**result)
+    return jsonify(**otp.verify(_twin(), mc, code))
 
 
 @bp.get("/otp/peek")
@@ -401,7 +387,7 @@ def otp_peek():
     This is the demo stand-in for an SMS arriving on the handset, so -- like a real
     phone -- it carries no adapter auth. CORS-open because the device UI is served
     from a separate origin (its own Railway service)."""
-    result = otp.peek(request.args.get("mc", ""))
+    result = otp.peek(_twin(), request.args.get("mc", ""))
     resp = jsonify(**result)
     resp.headers["Access-Control-Allow-Origin"] = os.environ.get("OTP_CORS_ORIGIN", "*")
     resp.headers["Cache-Control"] = "no-store"
