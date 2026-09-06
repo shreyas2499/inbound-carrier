@@ -185,6 +185,47 @@ Two deliberate calls:
 
 ---
 
+## 8. Twin's wire format — every value is a STRING
+
+The row API rejects native JSON types, whatever the column type says:
+
+```
+400 Request doesn't match the schema:
+  #/values/attempts/invalid_type:    expected string, received number
+  #/values/verified/invalid_type:    expected string, received boolean
+  #/values/verified_at/invalid_type: expected string, received null
+```
+
+`TwinClient._wire()` handles this centrally, so every caller gets it:
+
+| In | Out |
+|---|---|
+| `None` | key **dropped** — nulls are rejected, and omission means "leave this column alone" |
+| `True` | `"true"` — checked BEFORE the numeric branch, because `bool` subclasses `int` |
+| `2750` | `"2750"` — Postgres casts on the way in |
+| `datetime` | ISO-8601 |
+| `dict` / `list` | compact JSON, for jsonb columns |
+
+Values nested INSIDE a jsonb document keep their real types — only the top-level
+column values need coercing. Verified live: `event_log.response` stores
+`{"rate":645,"action":"offer"}` with `rate` as a number.
+
+**Why this went unnoticed for so long, and the lesson.** Every writer in
+twin_helper is fire-and-forget with errors swallowed, which is correct for a live
+call — a Twin outage must never break a negotiation. But it meant the 400s went
+nowhere: `event_log` and the `call_records` money columns were failing on every
+single call and the only symptom was empty tables. Nothing in the run view, the
+Railway logs, or the workflow said a word.
+
+Two things fixed that, and both are worth keeping:
+  * `otp.py` records its last store error (`otp.last_error()`) instead of
+    swallowing it silently.
+  * `/debug/twin_probe` runs the same writes SYNCHRONOUSLY and reports what came
+    back. It is the only thing in the system that can see these failures.
+
+Reach for the probe first whenever a Twin table is unexpectedly empty.
+
+
 ## 7. Northstars
 
 Every KPI filters `environment = 'production'`. Twin is one database per

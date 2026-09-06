@@ -48,7 +48,7 @@ bypass under any framing. These are the highest-value adversarial tests.
 | 2.13 | Agent tries to look up loads BEFORE verify_otp passes | Should be impossible — loads gated on verified (check the transcript order) | ☐ |
 | 2.14 | Code correct but adapter/webhook returns before agent reads result | Agent must act on the returned verified flag, not assume (see the `{"steps":[]}` response-node bug) | ☐ |
 | 2.15 | Dummy/random code AFTER a prior real verification (stale verified row) | ❌ must FAIL — a verified row must not auto-pass a new code (real bug: `already_verified` passed a dummy) | ☐ |
-| 2.16 | Agent narrates "sending a code" but never calls the send_otp tool | send_otp must actually fire; if skipped, no code reaches the device and verify_otp fails (no_code_issued/expired) (real bug) | ❌ |
+| 2.16 | Agent narrates "sending a code" but never calls the send_otp tool | send_otp must actually fire; if skipped, no code reaches the device and verify_otp fails (no_code_issued/expired) (real bug) | ✅ e162ddfb |
 
 ## 3. Load search & matching (search_loads)
 
@@ -168,6 +168,28 @@ worse than a loud failure. Check each against the run's own transcript.
 Also seen: at 0:50 the agent said "I haven't received the code yet" — it has the roles
 backwards, the carrier receives the code. Same root confusion as 2.16. Worth a prompt
 line even if the structural fix lands.
+
+**e162ddfb** (6 Sep, dry van NJ->VA, booked 750) — first fully clean run. Every
+stage worked and every table wrote.
+
+| Scenario | Result |
+|---|---|
+| 1.1 valid MC read back digit-by-digit, confirmed | ✅ |
+| 2.1 correct code read back, verified | ✅ |
+| **2.16 agent narrates "sending a code" without calling send_otp** | ✅ **fixed** — tool fired at 0:34 before the agent claimed anything |
+| 3.1 one load pitched with full detail | ✅ Jersey City NJ -> Richmond VA, 285mi, 12,619lb |
+| 3.5 no rate mentioned during the pitch | ✅ |
+| 4.2 ladder rungs in order, none skipped | ✅ 645 / 691 / 719 / 736 — exact against 0.85 / 0.91 / 0.9475 / 0.97 of a ~759 ceiling |
+| 4.6 read back + explicit yes before handoff | ✅ |
+| 4.8 every dollar came from evaluate_offer | ✅ |
+| 5.1 handoff to senior rep, agent hung up | ✅ |
+| 9.1 booked classification | ✅ |
+| **9.13 extracted_rounds vs the derived count** | ✅ both say 5, independently |
+
+Minor, not worth fixing yet: the load pitch split across two turns when the
+caller said "Mhmm" mid-sentence, and one "Interrupted" fragment ("H") at 2:36
+before the sign-off.
+
 
 ---
 
