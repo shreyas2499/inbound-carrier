@@ -267,10 +267,16 @@ def debug_twin_probe():
     exactly what came back, so a wrong path or payload shape shows up as a real
     error instead of a silently empty table.
 
-    Writes one throwaway row to `carriers` (mc_number 000001) and leaves it there
-    -- cleaning up is a DELETE, and that stays a human decision:
-        DELETE FROM carriers WHERE mc_number = '000001';
+    Writes throwaway rows to `carriers` and `otp_challenges` (mc_number 000001)
+    and leaves them there -- cleaning up is a DELETE, and that stays a human
+    decision:
+        DELETE FROM otp_challenges WHERE mc_number = '000001';
+        DELETE FROM carriers       WHERE mc_number = '000001';
+
+    Pass {"run_id": "<an existing call_records.run_id>"} to also exercise the
+    otp_challenges -> call_records foreign key; omit it to test the write alone.
     """
+    body = request.get_json(silent=True) or {}
     client = _twin()
     if not getattr(client, "enabled", False):
         return jsonify(ok=False, reason="twin_disabled",
@@ -292,6 +298,13 @@ def debug_twin_probe():
     _step("insert POST /twin/tables/carriers/rows",
           lambda: client.insert_row("carriers", {"mc_number": probe_mc,
                                                  "legal_name": "REST SHAPE PROBE"}))
+    # otp_challenges is exercised through otp.py itself rather than a hand-written
+    # payload, so the probe fails exactly where a real call would.
+    _step("otp.issue -> otp_challenges",
+          lambda: otp.issue(client, probe_mc, run_id=body.get("run_id")))
+    _step("otp.peek", lambda: {k: v for k, v in otp.peek(client, probe_mc).items()
+                               if k != "code"})
+    _step("otp store last error", lambda: otp.last_error() or "none")
     found = _step("find (client-side scan of GET /twin/tables/carriers)",
                   lambda: client.find_row("carriers", "mc_number", probe_mc))
     if found and found.get("id"):

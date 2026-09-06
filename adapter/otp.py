@@ -29,6 +29,7 @@ Env knobs (all optional, sane defaults):
 """
 from __future__ import annotations
 
+import logging
 import os
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -41,6 +42,23 @@ _PEEK_TTL = float(os.environ.get("OTP_PEEK_CACHE_SECONDS", "2"))
 
 _TABLE = "otp_challenges"
 _peek_cache = TTLCache(ttl_seconds=_PEEK_TTL)
+_log = logging.getLogger(__name__)
+
+# The last store error, verbatim. The gate must not leak internals to the agent,
+# so the tool response says only "store_unavailable" -- but swallowing the cause
+# entirely makes a failure undiagnosable from the outside, which is how the first
+# live OTP failure cost a whole test call. /debug/twin_probe reads this.
+_last_error: str | None = None
+
+
+def last_error():
+    return _last_error
+
+
+def _record(exc: Exception, where: str) -> None:
+    global _last_error
+    _last_error = f"{where}: {type(exc).__name__}: {exc}"[:500]
+    _log.error("otp store failure -- %s", _last_error)
 
 
 def _digits(value) -> str:
@@ -100,8 +118,10 @@ def issue(client, mc_number, run_id=None) -> dict:
             client.update_row(_TABLE, {"id": existing["id"]}, values)
         else:
             client.insert_row(_TABLE, {"mc_number": mc, **values})
-    except Exception:
-        # Never surface a store error as a code the carrier will wait for.
+    except Exception as exc:
+        # Never surface a store error as a code the carrier will wait for --
+        # but do record it, or the failure is invisible from every angle.
+        _record(exc, "issue")
         return {"sent": False, "reason": "store_unavailable"}
 
     _peek_cache.invalidate(mc)  # force the device's next poll to read through
@@ -121,7 +141,8 @@ def peek(client, mc_number) -> dict:
             return {"status": "none"}
         try:
             row = _row(client, mc)
-        except Exception:
+        except Exception as exc:
+            _record(exc, "peek")
             return {"status": "none"}
         if row:
             _peek_cache.set(mc, row)
@@ -155,8 +176,9 @@ def verify(client, mc_number, code) -> dict:
 
     try:
         row = _row(client, mc)
-    except Exception:
+    except Exception as exc:
         # Fails CLOSED. A store we cannot read is not permission to proceed.
+        _record(exc, "verify.read")
         return {"verified": False, "reason": "store_unavailable"}
     if not row:
         return {"verified": False, "reason": "no_code_issued"}
@@ -178,15 +200,15 @@ def verify(client, mc_number, code) -> dict:
             try:
                 client.update_row(_TABLE, pk, {"verified": True,
                                                "verified_at": _iso(_now())})
-            except Exception:
-                pass  # the check passed; recording it is best-effort
+            except Exception as exc:
+                _record(exc, "verify.mark")  # the check passed; recording is best-effort
         _peek_cache.invalidate(mc)
         return {"verified": True, "reason": "ok"}
 
     try:
         client.update_row(_TABLE, pk, {"attempts": attempts + 1})
-    except Exception:
-        pass
+    except Exception as exc:
+        _record(exc, "verify.attempts")
     _peek_cache.invalidate(mc)
     remaining = max(0, OTP_MAX_ATTEMPTS - (attempts + 1))
     return {"verified": False, "reason": "incorrect", "attempts_remaining": remaining}
