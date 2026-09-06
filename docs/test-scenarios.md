@@ -109,6 +109,8 @@ Regression cases — several of these were real bugs.
 | 4.22 | Agent hears "rate_not_offered" | Re-confirms the rate with the caller and retries once with evaluate_offer's number — never announces a rejection, never invents a different rate | ☐ |
 | 4.23 | Agent claims a booking reference | ❌ never — no live commit happens; a senior rep finalizes. No ref exists to say | ☐ |
 | 4.24 | Ladder must be walked to the last rung before "best I can do" | The agent may only say it is at its limit AFTER evaluate_offer has returned the round-3 rung. Saying it earlier gives the caller a worse deal than the policy allows | ☐ |
+| 4.25 | Accepted rate is a number named several turns earlier | Agent ATTRIBUTES it and asks — "the twenty-five fifty you mentioned earlier, does that work?" — never "we have X agreed". The caller has not agreed to that figure in this turn and it otherwise sounds invented (3ffe77c1: accepted 2550 three offers after it was named, and it read as coming from nowhere) | ☐ |
+| 4.26 | Carrier pushes back with no number, twice running | Each pushback advances a rung carrying their LAST named number; round 4+ then accepts it if it is under the ceiling | ✅ 3ffe77c1 |
 | 3.11 | "Reefer" misheard as "referral" / "refill" / "reaper" | Agent offers the nearest match ("Did you mean a reefer?") rather than re-reading the three options. 753e5b3d got this right, 35fcfa32 re-listed twice and burned ~17s | ☐ |
 
 ## 5. Call flow, turn-taking, ending
@@ -317,6 +319,24 @@ overcorrected: it conflated "restating a number before we have countered again"
 with "holding a number after we have", and the second is a genuine negotiating
 move that should advance. Replaced with a simpler invariant — ONE call per
 pushback, round incremented, whatever form the pushback takes.
+
+---
+
+
+**3ffe77c1** (6 Sep, reefer SC->SD, booked 2550) — the full ladder end to end,
+and the first run where every rung was delivered.
+
+| Scenario | Result |
+|---|---|
+| 4.14 / 4.26 pushback advances a rung | ✅ **the regression fix proven.** 2209 → 2365 → 2463 → 2521 → accept 2550. Five calls, rounds 0-4, no repeats. The two "a little higher" turns each carried the caller's last named number (2550) forward, exactly as intended — where 35fcfa32 stalled at 2463 |
+| 3.11 "reefer" misheard | ✅ heard "a refill" → "Did you mean a reefer?" → straight through. Three turns yesterday, one today |
+| 4.20 book_load records the deal | ✅ `confirmed` |
+| 4.25 attribution on a reached-back accept | ❌ **new** — said "We have twenty-five fifty agreed" for a figure the caller last named three offers and ~25s earlier. Correct number, correct policy, but it read as invented and asserted an agreement never given to that number |
+| Speech quality | ⚠️ three `Cut` markers (0:38, 1:32, 2:00) — agent cut off starting "Are you okay with twenty-" and "Woul". Recovered each time WITHOUT re-calling the tool (4.12 ✅), but this is exactly what `assistant_cut_ratio` would quantify and it is still NULL |
+
+Closed $49 under a $2,599 ceiling. Worth noting the ladder now behaves correctly
+in both directions: 35fcfa32 proved it must not stall short of the last rung,
+3ffe77c1 proves it walks all of them and then accepts at the ceiling.
 
 ---
 

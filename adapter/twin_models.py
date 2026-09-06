@@ -109,11 +109,26 @@ class CallRecord:
     handle_time_sec: Optional[int]     # int4           <- Handle Customer Call.duration
     call_end_initiator: Optional[str]  # text           <- Handle Customer Call.call_end_initiator
                                        #                   non-LLM cross-check on the 'abandoned' tag
-    num_tool_calls: Optional[int]      # int4           <- Handle Customer Call.num_tool_calls
-    assistant_cut_ratio: Optional[float]  # float4      <- Handle Customer Call.assistant_cut_message_ratio
-                                       #                   measures the speech-fragmentation problem
-                                       #                   behind the duplicate-evaluate_offer bug
-    p90_latency_ms: Optional[int]      # int4           <- Handle Customer Call.p90_latency_ms
+    #
+    # num_tool_calls / p90_latency_ms / assistant_cut_ratio USED TO LIVE HERE and
+    # were dropped. All three were mapped in the Store Call Details node and all
+    # three came back NULL on every one of six live calls -- the run payload shows
+    # the node omitting them entirely, because the variables resolve empty on a
+    # WEB call (they are voice-layer metrics; telephony would populate them).
+    #
+    # Two of them were never the workflow's to give in the first place:
+    #   num_tool_calls  = count(*) of event_log rows for the run
+    #   p90_latency_ms  = percentile_disc(0.9) over event_log.latency_ms
+    # Both are now derived in call_records_v, the same call the `rounds` column
+    # made: the audit trail already holds the facts, so a second copy could only
+    # drift. They are strictly better derived -- they now count the ADAPTER's real
+    # tool calls and latencies rather than the agent's view of them.
+    #
+    # assistant_cut_ratio is genuinely gone. Cuts are a voice-layer event the
+    # adapter never observes, so there is nothing to derive it from. Calls DO get
+    # cut (3ffe77c1 had three), and that fragmentation is the root of the
+    # duplicate-evaluate_offer bugs -- but an always-empty column measures it no
+    # better than no column, and pretends otherwise. Say so in the build doc.
 
     # -- LLM cross-check, NOT source of truth (workflow) -----------------------
     extracted_agreed_rate: Optional[int]  # int4        <- negotiation.response.agreed_rate

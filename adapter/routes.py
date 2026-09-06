@@ -104,6 +104,13 @@ def verify_carrier():
         result = fmcsa.verify_mc(mc, _config().fmcsa_api_key)
     except fmcsa.FmcsaUnavailable as e:
         return jsonify(error="fmcsa_unavailable", message=str(e)), 503
+
+    # Popped BEFORE anything else touches `result`, because the tail of this
+    # function returns `result` wholesale to the agent. The raw FMCSA record is
+    # archived to Twin and must never enter the agent's context: it carries
+    # address, EIN and fleet detail, and anything in context can be talked out.
+    raw = result.pop("_raw", None)
+
     # Master carrier record, keyed on mc_number. Fire-and-forget: a Twin outage
     # must not stop a carrier getting verified.
     if result.get("found"):
@@ -114,6 +121,7 @@ def verify_carrier():
             legal_name=result.get("legal_name"),
             authority_eligible=result.get("eligible"),
             phone=result.get("phone"),
+            fmcsa_raw=raw,
         )
     # The identity code is issued HERE, by the server, the moment authority checks
     # out -- not by a separate tool the agent has to remember to call. Those two

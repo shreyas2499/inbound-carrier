@@ -355,6 +355,37 @@ def test_verify_carrier_issues_code_when_eligible(mocks, monkeypatch):
     assert seen == ["872144"]
 
 
+def test_verify_carrier_never_returns_the_raw_fmcsa_record(mocks, monkeypatch):
+    """The full FMCSA record is archived to Twin, not handed to the agent. It
+    carries address, EIN and fleet detail, and every field in the agent's context
+    is a field it can be talked into repeating."""
+    _fmcsa_stub(monkeypatch)
+    _spy_on_issue(monkeypatch)
+    c = _make(_route_handler, mocks)
+    body = c.post("/tools/verify_carrier", json={"mc_number": "872144"},
+                  headers={"X-API-Key": API_KEY}).get_json()
+    assert "_raw" not in body
+    assert "oosDate" not in json.dumps(body)
+    assert body["legal_name"] == "ACME TRUCKING"   # the summary still arrives
+
+
+def test_verify_carrier_archives_the_raw_record_to_twin(mocks, monkeypatch):
+    """carriers.fmcsa_raw is the master carrier record's copy of the authority
+    payload. event_log has it too, but event_log is per-call and will be pruned;
+    the carrier row is what survives an authority dispute."""
+    from adapter import routes
+    _fmcsa_stub(monkeypatch)
+    _spy_on_issue(monkeypatch)
+    seen = {}
+    monkeypatch.setattr(routes.twin_helper, "upsert_carrier",
+                        lambda client, **kw: seen.update(kw))
+    c = _make(_route_handler, mocks)
+    c.post("/tools/verify_carrier", json={"mc_number": "872144"},
+           headers={"X-API-Key": API_KEY})
+    assert seen["fmcsa_raw"]["legalName"] == "ACME TRUCKING"
+    assert seen["fmcsa_raw"]["dotNumber"] == 1
+
+
 def test_verify_carrier_issues_no_code_when_not_eligible(mocks, monkeypatch):
     """No authority, no code. Otherwise this endpoint becomes a way to spray
     challenges at any MC number a caller cares to read out."""

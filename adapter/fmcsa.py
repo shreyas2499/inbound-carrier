@@ -78,6 +78,12 @@ def verify_mc(mc_number, web_key: str, *, timeout: float = 8.0) -> dict:
         # No phone on the docket-number endpoint; telephone/phoneNumber only
         # appear on the fuller carrier snapshot. Left in for when present.
         "phone": carrier.get("telephone") or carrier.get("phoneNumber"),
+        # The full carrier record, for the carriers.fmcsa_raw archive. The leading
+        # underscore marks it INTERNAL: /tools/verify_carrier pops it before
+        # jsonify, so it never reaches the agent. It must not -- it carries
+        # address, EIN and fleet detail the agent has no reason to hold, and every
+        # field in the agent's context is a field it can be talked into repeating.
+        "_raw": carrier,
     }
 
 
