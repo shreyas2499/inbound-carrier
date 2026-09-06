@@ -191,6 +191,45 @@ caller said "Mhmm" mid-sentence, and one "Interrupted" fragment ("H") at 2:36
 before the sign-off.
 
 
+## 10. Data layer (Twin) — everything that failed silently once
+
+Every writer in `twin_helper` is fire-and-forget with errors swallowed, which is
+right for a live call and terrible for finding out something is broken. Each row
+here is a failure mode that produced NO error anywhere — the only symptom was an
+empty table. `/debug/twin_probe` is the tool that makes them visible; reach for it
+first whenever a table is unexpectedly empty.
+
+| # | Scenario | Expected behavior | Status |
+|---|----------|-------------------|--------|
+| 10.1 | Adapter writes an int / bool / null column | Coerced to a string by `TwinClient._wire`; nulls dropped, not sent (real bug: 400 `expected string, received number` on every write for hours) | ✅ e162ddfb |
+| 10.2 | `event_log.request` / `.response` round-trip | Stored as real jsonb — `->>` works, and values nested inside keep their types | ✅ e162ddfb |
+| 10.3 | A column is dropped from a Twin table | Both Write-to-Twin nodes must have their column list refreshed, or the write is rejected before it starts (real bug: dropping `rounds` broke every call) | ✅ |
+| 10.4 | Editor changes left unpublished | Calls run the published version — a refreshed node or toggled Response node does nothing until published (real bug: empty `verify_carrier` Result) | ✅ |
+| 10.5 | Twin unreachable during `verify_otp` | Gate fails CLOSED — `store_unavailable`, never a pass. Single-store tradeoff, pinned by a test | ☐ |
+| 10.6 | Twin unreachable during `start_call_record` | With Continue-on-failure ON the call proceeds unlogged; with it OFF the call never reaches the agent | ☐ |
+| 10.7 | Caller abandons before the post-call chain | Stub row from `start_call_record` still present, `outcome` null — a call that started and never finished is visible | ☐ |
+| 10.8 | Delete a `call_records` row | `event_log` and `otp_challenges` children cascade; rows with a null `run_id` survive | ☐ |
+| 10.9 | Two calls from the same MC | One `carriers` row, `call_count` incremented; one `otp_challenges` row, replaced not duplicated | ☐ |
+| 10.10 | `rounds` (view) vs `extracted_rounds` (LLM) | Agree. They are independent — a count of `event_log` rows vs a transcript re-read | ✅ e162ddfb |
+| 10.11 | Every row carries `environment` | Northstars filter `production`; a null here silently drops the call from KPIs | ☐ |
+
+## 11. OTP storage — the plaintext tradeoff
+
+`/otp/peek` is the delivery channel and must read the code back, so with Twin as
+the only store the code is held in PLAINTEXT. That is tolerable only because
+`/otp/peek` is itself public and unauthenticated — the code is already readable
+by anyone who knows the MC for its 3-minute life. These scenarios exist so the
+tradeoff stays deliberate rather than forgotten.
+
+| # | Scenario | Expected behavior | Status |
+|---|----------|-------------------|--------|
+| 11.1 | Guess an MC currently being verified and hit `/otp/peek` | The live code is returned. KNOWN and accepted for the demo; a real deployment sends by SMS and stores only a digest | ☐ |
+| 11.2 | `/otp/peek` polled every ~1.5s by the device | Served from a ~2s cache — five polls cost one Twin read, not five table scans | ✅ unit |
+| 11.3 | Code expires while the device is open | Screen clears to blank, ready for the next code; peek returns `status: none` | ☐ |
+| 11.4 | Adapter redeploys between `send_otp` and `verify_otp` | Code survives — it lives in Twin now, not in container-local storage. This is what the single-store move bought | ☐ |
+| 11.5 | Anything in Twin or the logs exposes the code to the agent | ❌ never — `send_otp` returns metadata only; the agent must hear it from the caller | ☐ |
+
+
 ---
 
 ## Backlog — scenarios to add / flesh out later
@@ -203,6 +242,10 @@ before the sign-off.
 - International / malformed MC formats.
 - Daylight-saving / timezone display on pickup windows.
 - Load with missing fields (no weight / no commodity) — pitch still coherent?
+- Twin `find_row` is a client-side scan — measure `verify_otp` latency as `otp_challenges` grows; swap for a Twin View if it degrades.
+- Expired `otp_challenges` rows are never reaped — decide on a cleanup policy.
+- `created_at` / `expires_at` are `timestamp`, not `timestamptz`. Self-consistent today because the adapter only ever writes UTC; a second writer in local time would compare wrong.
+- Speech: the load pitch split across two turns when the caller said "Mhmm" mid-sentence (e162ddfb). Cosmetic, but worth watching if it recurs.
 
 ---
 
