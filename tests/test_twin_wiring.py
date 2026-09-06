@@ -142,8 +142,11 @@ def test_loadboard_rate_and_rounds_land_before_any_deal(client):
     so a call that dies mid-negotiation still leaves evidence it happened."""
     _negotiate(client, [None])
     _, _, _, vals = client.twin.rows("update", "call_records")[0]
-    assert vals == {"loadboard_rate": 2600}
-    assert "agreed_rate" not in vals and "margin_vs_ceiling" not in vals
+    # margin rides along on every exchange now -- see
+    # test_margin_is_written_on_a_counter_not_only_an_accept for why.
+    assert vals["loadboard_rate"] == 2600
+    assert vals["margin_vs_ceiling"] == 2802 - 2382
+    assert "agreed_rate" not in vals   # the opening offer is not a deal
 
 
 def test_ceiling_never_reaches_the_agent(client):
@@ -162,8 +165,10 @@ def test_no_deal_records_the_negotiation_but_no_agreed_rate(client):
     assert updates, "a lost negotiation must still leave a trail"
     _, _, _, vals = updates[-1]
     assert vals["loadboard_rate"] == 2600
-    assert "agreed_rate" not in vals
-    assert "margin_vs_ceiling" not in vals
+    assert "agreed_rate" not in vals          # no deal, so no agreed rate
+    # margin IS present: it measures our last offer against the ceiling, which is
+    # exactly what you want to see on a call that got away.
+    assert isinstance(vals["margin_vs_ceiling"], int)
 
 
 def test_no_write_without_a_run_id(client):
@@ -188,6 +193,40 @@ def test_every_exchange_leaves_an_event_log_row_to_count(client):
 
 
 
+
+
+def test_margin_is_written_on_a_counter_not_only_an_accept(client):
+    """A deal that books on a counter the carrier verbally accepts is the NORMAL
+    case -- the server never sees an `accept`. When the money columns keyed off
+    action == "accept", every such call reported NULL (real bug: 90eb69cb closed
+    at 736 and 42f824af at 10224, both with agreed_rate NULL)."""
+    client.post("/tools/evaluate_offer", headers=HEADERS, json={
+        "load_id": "LD00731", "round": 1, "carrier_offer": 99999, "run_id": RUN})
+    patched = client.twin.rows("update", "call_records")
+    assert patched, "no call_records write at all"
+    last = patched[-1][3]
+    assert last["margin_vs_ceiling"] == 2802 - 2550   # ceiling - the 91% rung
+    assert "agreed_rate" not in last                  # no accept, so no agreed_rate
+    assert last["loadboard_rate"] == 2600
+
+
+def test_margin_pairs_with_the_rate_actually_offered(client):
+    """Measured against the number on the table, so the final write always pairs
+    with last_rate -- which is what makes last_rate usable as the deal rate."""
+    client.post("/tools/evaluate_offer", headers=HEADERS, json={
+        "load_id": "LD00731", "round": 0, "run_id": RUN})
+    last = client.twin.rows("update", "call_records")[-1][3]
+    assert last["margin_vs_ceiling"] == 2802 - 2382   # ceiling - the opening rung
+
+
+def test_clarify_writes_no_margin(client):
+    """A `clarify` rate is the carrier's mis-heard number, not an offer -- a
+    margin measured against it would be meaningless."""
+    r = client.post("/tools/evaluate_offer", headers=HEADERS, json={
+        "load_id": "LD00731", "round": 1, "carrier_offer": 1, "run_id": RUN})
+    assert r.get_json()["action"] == "clarify"
+    last = client.twin.rows("update", "call_records")[-1][3]
+    assert "margin_vs_ceiling" not in last
 
 
 # --- 4. event_log mirroring ---------------------------------------------------

@@ -249,17 +249,29 @@ def evaluate_offer():
     # loadboard_rate IS written on every exchange, not just the accept: it is known
     # the moment a rate is discussed, and a call that dies mid-negotiation is
     # exactly the one worth having a record of.
+    action = decision.get("action")
+    offered = _as_int(decision.get("rate"))
+    ceiling = _as_int(max_buy)
+
     updates = {"loadboard_rate": _as_int(load.get("RATE"))}
-    if decision.get("action") == "accept":
-        # The only moment anything knows all four money numbers at once. They are
-        # written straight to Twin and NEVER returned: agreed_rate plus
-        # margin_vs_ceiling reconstructs MAX_BUY, so handing them back would leak
-        # the ceiling to the agent and therefore to the caller.
-        agreed = _as_int(decision.get("rate"))
-        ceiling = _as_int(max_buy)
-        updates["agreed_rate"] = agreed
-        if ceiling is not None and agreed is not None:
-            updates["margin_vs_ceiling"] = ceiling - agreed
+
+    # margin is written on EVERY real move, against the number actually on the
+    # table, not only on an `accept`. Most deals never produce an `accept`: the
+    # carrier says "yeah, that works" to our counter, which is a CONVERSATIONAL
+    # event the server never sees, so keying the money columns off action ==
+    # "accept" left agreed_rate and margin NULL on calls that plainly booked.
+    # Writing it every exchange means the last write always pairs with last_rate,
+    # which IS the rate the deal closed at whenever the call books.
+    #
+    # `clarify` is excluded: its rate is the carrier's mis-heard number, not an
+    # offer, so a margin against it would be meaningless.
+    #
+    # Still never returned. agreed_rate/margin_vs_ceiling reconstruct MAX_BUY, so
+    # handing either back would leak the ceiling to the agent and to the caller.
+    if action != "clarify" and ceiling is not None and offered is not None:
+        updates["margin_vs_ceiling"] = ceiling - offered
+    if action == "accept":
+        updates["agreed_rate"] = offered
     twin_helper.update_call_record(_twin(), run_id=run_id, **updates)
 
     # The response carries ONLY the next move — never MAX_BUY.
