@@ -175,7 +175,8 @@ def _scrub(payload: Any) -> Any:
 # ---------------------------------------------------------------------------
 def log_event(client: TwinClient, *, tool: str, status: str,
               request: Optional[dict] = None, response: Optional[Any] = None,
-              run_id: Optional[str] = None, mc_number: Optional[str] = None,
+              run_id: Optional[str] = None, environment: Optional[str] = None,
+              mc_number: Optional[str] = None,
               load_id: Optional[str] = None, latency_ms: Optional[int] = None,
               background: bool = True) -> None:
     """Append one row to `event_log`. Fire-and-forget: returns immediately, errors
@@ -197,6 +198,7 @@ def log_event(client: TwinClient, *, tool: str, status: str,
         "tool": tool,
         "status": status,
         "run_id": run_id,
+        "environment": environment,
         "mc_number": mc_number,
         "load_id": load_id,
         "request": _scrub(request or {}),
@@ -204,6 +206,34 @@ def log_event(client: TwinClient, *, tool: str, status: str,
         "latency_ms": latency_ms,
     }
     _dispatch(client.insert_row, "event_log", values, background=background)
+
+
+def update_call_record(client: TwinClient, *, run_id: Optional[str],
+                       background: bool = True, **fields: Any) -> None:
+    """Patch the `call_records` row the WORKFLOW created, with the columns only
+    the adapter can compute: loadboard_rate, agreed_rate, margin_vs_ceiling and
+    the true round count.
+
+    All four derive from MAX_BUY or from counting tool calls. MAX_BUY is stripped
+    from every agent-facing response by design, so these values do not exist
+    anywhere in the workflow's variable space -- returning them so the workflow
+    could write them would hand the agent the ceiling, since
+    agreed_rate + margin_vs_ceiling == max_buy.
+
+    This is an UPDATE, not an insert: it relies on the workflow's start_call_record
+    node having created the row keyed on run_id before the call reached the agent.
+    Fire-and-forget like the rest of this module -- a Twin outage must never
+    surface in a live negotiation.
+
+    None-valued fields are dropped rather than written, so a partial update never
+    blanks a column another writer already filled."""
+    if not client.enabled or not run_id:
+        return
+    values = {k: v for k, v in fields.items() if v is not None}
+    if not values:
+        return
+    _dispatch(client.update_row, "call_records", {"run_id": str(run_id)}, values,
+              background=background)
 
 
 def upsert_carrier(client: TwinClient, *, mc_number: str,

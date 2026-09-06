@@ -13,9 +13,10 @@ import os
 
 from flask import Blueprint, current_app, jsonify, request
 
-from adapter import fmcsa, otp
+from adapter import call_state, fmcsa, otp, twin_helper
 from adapter.auth import require_api_key
 from adapter.negotiation import evaluate_offer as evaluate_offer_policy
+from adapter.obs import CORRELATION_KEYS, call_context
 from adapter.serializers import public_load
 from adapter.tms_client import BookAmbiguousError, TmsUnavailable
 from adapter.tms_codec import TmsError
@@ -33,6 +34,20 @@ def _config():
 
 def _cache():
     return current_app.config["LOAD_CACHE"]
+
+
+def _twin():
+    return current_app.config["TWIN_CLIENT"]
+
+
+def _as_int(value):
+    """Best-effort int for values coming off the TMS wire. Returns None rather
+    than raising -- a bad rate must never break a live call, it just means one
+    analytics column stays null."""
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
 
 
 def _load_record(load_id: str):
@@ -87,6 +102,17 @@ def verify_carrier():
         result = fmcsa.verify_mc(mc, _config().fmcsa_api_key)
     except fmcsa.FmcsaUnavailable as e:
         return jsonify(error="fmcsa_unavailable", message=str(e)), 503
+    # Master carrier record, keyed on mc_number. Fire-and-forget: a Twin outage
+    # must not stop a carrier getting verified.
+    if result.get("found"):
+        twin_helper.upsert_carrier(
+            _twin(),
+            mc_number=str(result.get("mc_number") or mc),
+            dot_number=str(result["dot_number"]) if result.get("dot_number") else None,
+            legal_name=result.get("legal_name"),
+            authority_eligible=result.get("eligible"),
+            phone=result.get("phone"),
+        )
     # Always 200 on a completed lookup (found or not) so the workflow branches on
     # `eligible` rather than on HTTP status. Only a real API failure is a 503.
     return jsonify(**result)
@@ -96,7 +122,11 @@ def verify_carrier():
 @require_api_key
 def search_loads():
     body = request.get_json(silent=True) or {}
-    filters = {k.upper(): v for k, v in body.items() if v not in (None, "")}
+    # CORRELATION_KEYS are stripped first: this endpoint turns the whole body into
+    # LOAD_QUERY filters, so leaving run_id in would send RUN_ID=<uuid> to the
+    # legacy TMS as a load filter and match nothing.
+    filters = {k.upper(): v for k, v in body.items()
+               if v not in (None, "") and k.lower() not in CORRELATION_KEYS}
     if not filters:
         return jsonify(error="missing_field", message="at least one filter required"), 400
     try:
@@ -165,6 +195,26 @@ def evaluate_offer():
     if max_buy is None:
         return jsonify(error="no_ceiling", message="ceiling not available for this token"), 409
     decision = evaluate_offer_policy(max_buy, round_number, carrier_offer)
+
+    # Count the exchange ourselves rather than trusting the agent's `round`.
+    run_id = call_context(body)["run_id"]
+    rounds = call_state.bump_round(run_id, load_id)
+
+    if decision.get("action") == "accept":
+        # The only moment anything knows all four money numbers at once. They are
+        # written straight to Twin and NEVER returned: agreed_rate plus
+        # margin_vs_ceiling reconstructs MAX_BUY, so handing them back would leak
+        # the ceiling to the agent and therefore to the caller.
+        agreed = _as_int(decision.get("rate"))
+        ceiling = _as_int(max_buy)
+        twin_helper.update_call_record(
+            _twin(), run_id=run_id,
+            loadboard_rate=_as_int(load.get("RATE")),
+            agreed_rate=agreed,
+            margin_vs_ceiling=(ceiling - agreed) if (ceiling is not None and agreed is not None) else None,
+            rounds=rounds or None,
+        )
+
     # The response carries ONLY the next move — never MAX_BUY.
     return jsonify(**decision)
 

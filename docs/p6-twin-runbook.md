@@ -136,19 +136,35 @@ Two gotchas already paid for once each:
 
 ---
 
-## 4. Then: run_id into the tool bodies
+## 4. run_id in the tool bodies  — DONE
 
-The adapter cannot fill its four columns without knowing which call it is
-serving. Add `"run_id": @Current.run_id` to the JSON body of all five POST
-webhook nodes. The adapter already ignores unknown body fields, so this is
-additive and safe to ship before any adapter change.
+All five POST nodes carry `"run_id": @Current.run_id`. That one field is what
+lets the adapter know which call it is serving.
 
-`adapter/obs.py::call_context()` already reads `run_id` / `call_id` / `callId`
-out of the body, so nothing new is needed to parse it.
+**It also broke search.** `search_loads` builds its LOAD_QUERY filters out of the
+whole request body, so `run_id` went to the legacy TMS as a filter named `RUN_ID`.
+Fixed by stripping `obs.CORRELATION_KEYS` before building filters; regression test
+in `tests/test_twin_wiring.py`.
 
----
+## 5. Adapter side  — DONE
 
-## 5. Open questions before building past step 3
+| What | Where |
+|---|---|
+| `loadboard_rate`, `agreed_rate`, `margin_vs_ceiling`, `rounds` | written on `action == "accept"` in `routes.evaluate_offer` via `twin_helper.update_call_record` |
+| true round count | `adapter/call_state.py` — SQLite, keyed `(run_id, load_id)` |
+| `carriers` upsert | `routes.verify_carrier` on a found lookup |
+| `event_log` | one hook in `obs.register_observability`, covering every `/tools/*` and `/debug/*` call including failures |
+
+Two deliberate calls:
+
+- **event_log is wired in the obs hook, not per route.** Six call sites would each
+  have to remember the error paths; the first one anybody forgets is a silent hole.
+- **`event_log.response` stores the ADAPTER's response, not the raw upstream
+  record.** Narrower than `twin_models.EventLog` originally described, and better:
+  the adapter's response has already had MAX_BUY stripped, so no ceiling is written
+  to Twin in any form. Raw upstream payloads stay in container logs and `/debug/*`.
+
+## 6. Open questions
 
 - **`book_load` is deliberately deferred to LAST.** The endpoint exists and
   returns a `booking_ref`, but no tool node invokes it, so `outcome='booked'`
@@ -169,7 +185,7 @@ out of the body, so nothing new is needed to parse it.
 
 ---
 
-## 6. Northstars
+## 7. Northstars
 
 Every KPI filters `environment = 'production'`. Twin is one database per
 workspace with no dev/staging/prod separation of its own, so without that filter

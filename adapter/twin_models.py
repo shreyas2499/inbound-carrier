@@ -165,7 +165,12 @@ class EventLog:
     mc_number: Optional[str]           # text      denormalized for filtering
     load_id: Optional[str]             # text      denormalized for filtering
     request: dict[str, Any]            # jsonb     logical request (NO auth token / webKey)
-    response: dict[str, Any]           # jsonb     ENTIRE raw upstream response, verbatim
+    response: dict[str, Any]           # jsonb     the ADAPTER's response, not the raw upstream
+                                       #           record. Narrowed on purpose: the adapter's
+                                       #           response has already had MAX_BUY stripped by
+                                       #           the serializer, so no ceiling is ever written
+                                       #           to Twin in any form. Raw upstream payloads
+                                       #           stay in the container logs and /debug/*.
     status: str                        # text      ok|not_found|already_booked|invalid_rate|tms_fault|error
     latency_ms: Optional[int]          # int4      round-trip time; feeds a fault/latency view
 
