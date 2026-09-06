@@ -103,7 +103,11 @@ Regression cases — several of these were real bugs.
 | 4.16 | Very long-haul load (3,800+ mi, five-figure rate) | Ladder is proportional to MAX_BUY, so the rungs scale correctly — a $10k offer is right if the ceiling is $12k (42f824af: $10,224 on 3,832 mi = $2.67/mi ✅) | ✅ 42f824af |
 | 4.17 | **Deal closes on a counter the carrier accepts verbally** | agreed_rate + margin must still be recorded. The server never sees an `accept` here — acceptance is a conversational event — so margin is now written on EVERY exchange and pairs with last_rate (real bug: NULL money on 90eb69cb and 42f824af) | ☐ (unit ✅) |
 | 4.18 | Carrier counters ABOVE the ceiling every round | Never accepted; ladder counters to the 97% rung and the carrier takes it (90eb69cb: 780/770/760 vs a $759 ceiling → closed 736) | ✅ 90eb69cb |
-| 4.19 | Full ladder + round-4 accept | All four rungs then a true `accept` — the only path that writes agreed_rate server-side today | ✅ fbf0615a |
+| 4.19 | Full ladder + round-4 accept | All four rungs then a true `accept` | ✅ fbf0615a |
+| 4.20 | `book_load` records the deal at hand-off | agreed_rate + margin written on ANY close, counter or accept — this is the call that tells the server a deal happened | ☐ (unit ✅) |
+| 4.21 | `book_load` with a rate above the ceiling | 409 `rate_not_offered`, NOTHING written. Last line of defence against a mis-heard number ("twenty-seven fifty" → 2850) being recorded as the deal | ☐ (unit ✅) |
+| 4.22 | Agent hears "rate_not_offered" | Re-confirms the rate with the caller and retries once with evaluate_offer's number — never announces a rejection, never invents a different rate | ☐ |
+| 4.23 | Agent claims a booking reference | ❌ never — no live commit happens; a senior rep finalizes. No ref exists to say | ☐ |
 
 ## 5. Call flow, turn-taking, ending
 

@@ -1,5 +1,6 @@
 """Endpoint tests against a mock TMS. The headline assertions: MAX_BUY never
 appears in any agent-facing response, and auth is enforced."""
+import json
 import pytest
 
 from adapter.config import Config
@@ -127,6 +128,14 @@ def test_evaluate_offer_uses_ceiling_but_never_returns_it(mocks):
     assert "MAX_BUY" not in body and "max_buy" not in body
 
 
+SKIP_LIVE_BOOK = pytest.mark.skip(
+    reason="the LIVE TMS commit in routes.book_load is commented out under the "
+           "read-only demo scope (each real LOAD_BOOK permanently consumes one of "
+           "a small pool of test loads). Unskip these two together with that block."
+)
+
+
+@SKIP_LIVE_BOOK
 def test_book_load_success(mocks):
     c = _make(_route_handler, mocks)
     r = c.post("/tools/book_load",
@@ -137,6 +146,7 @@ def test_book_load_success(mocks):
     assert body["booking_ref"] == "BR00000000091277"
 
 
+@SKIP_LIVE_BOOK
 def test_book_ambiguous_is_confirmed_via_get(mocks):
     # BOOK times out; a follow-up GET shows STATUS:BOOKED -> report booked.
     def handler(req):
@@ -153,6 +163,54 @@ def test_book_ambiguous_is_confirmed_via_get(mocks):
     body = r.get_json()
     assert body["status"] == "booked"
     assert "confirmed" in body.get("note", "")
+
+
+def test_book_load_records_without_committing(mocks):
+    """Read-only scope: the deal is confirmed and recorded, the load is not
+    committed to the TMS, and no booking_ref is invented."""
+    c = _make(_route_handler, mocks)
+    r = c.post("/tools/book_load",
+               json={"load_id": "LD0000045821", "mc_number": "872144", "agreed_rate": 2200},
+               headers={"X-API-Key": API_KEY})
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["status"] == "confirmed"
+    assert body["recorded"] is True
+    assert "booking_ref" not in body
+
+
+def test_book_load_refuses_a_rate_above_the_ceiling(mocks):
+    """agreed_rate arrives from something that mis-hears numbers. Every rate the
+    agent was given came from evaluate_offer and was bounded by the ceiling, so
+    one above it was garbled or invented -- refuse rather than record it."""
+    c = _make(_route_handler, mocks)     # GET_WITH_CEILING -> MAX_BUY 2500
+    r = c.post("/tools/book_load",
+               json={"load_id": "LD0000045821", "mc_number": "872144", "agreed_rate": 2501},
+               headers={"X-API-Key": API_KEY})
+    assert r.status_code == 409
+    body = r.get_json()
+    assert body["error"] == "rate_not_offered"
+    # and the refusal must not echo the ceiling back
+    blob = json.dumps(body)
+    assert "2500" not in blob and "MAX_BUY" not in blob
+
+
+def test_book_load_refuses_a_nonsense_rate(mocks):
+    c = _make(_route_handler, mocks)
+    for bad in (0, -100):
+        r = c.post("/tools/book_load",
+                   json={"load_id": "LD0000045821", "mc_number": "872144", "agreed_rate": bad},
+                   headers={"X-API-Key": API_KEY})
+        assert r.status_code == 409, bad
+
+
+def test_book_load_requires_all_three_fields(mocks):
+    c = _make(_route_handler, mocks)
+    for payload in ({"mc_number": "872144", "agreed_rate": 2200},
+                    {"load_id": "LD0000045821", "agreed_rate": 2200},
+                    {"load_id": "LD0000045821", "mc_number": "872144"}):
+        r = c.post("/tools/book_load", json=payload, headers={"X-API-Key": API_KEY})
+        assert r.status_code == 400, payload
 
 
 def test_evaluate_offer_opening_returns_offer_below_ceiling(mocks):

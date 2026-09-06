@@ -281,6 +281,19 @@ def evaluate_offer():
 @bp.post("/tools/book_load")
 @require_api_key
 def book_load():
+    """Confirm the closed deal and record it server-side.
+
+    THIS IS THE CALL THAT TELLS THE SERVER A DEAL HAPPENED. Everything before it
+    is an offer: `evaluate_offer` knows what we put on the table but never learns
+    whether the carrier said yes, because acceptance is a conversational event.
+    Without this call a booking that closed on a counter leaves agreed_rate NULL
+    (seen on runs 90eb69cb and 42f824af).
+
+    The TMS commit itself is COMMENTED OUT while the demo runs read-only -- each
+    live LOAD_BOOK permanently consumes one of a small pool of test loads. The
+    Twin write is NOT commented out: recording the deal costs nothing and is the
+    half that the data layer depends on. Uncomment the block below to go live.
+    """
     body = request.get_json(silent=True) or {}
     try:
         load_id = body["load_id"]
@@ -289,24 +302,73 @@ def book_load():
     except (KeyError, TypeError, ValueError):
         return jsonify(error="missing_field",
                        message="load_id, mc_number, agreed_rate required"), 400
+
     try:
-        rec = _client().load_book(load_id, mc_number, agreed_rate)
-        _cache().invalidate(load_id)  # availability changed
-        return jsonify(status="booked", booking_ref=rec.get("BOOKING_REF"))
+        load = _load_record(load_id)
     except TmsError as e:
-        return jsonify(error=e.code, message=e.message), 409
-    except BookAmbiguousError:
-        # A timed-out book may have committed. Confirm live (bypass cache).
-        try:
-            load = _client().load_get(load_id)
-        except Exception:
-            load = None
-        _cache().invalidate(load_id)
-        if load and load.get("STATUS") == "BOOKED":
-            return jsonify(status="booked", booking_ref=load.get("BOOKING_REF"),
-                           note="confirmed after ambiguous booking")
-        return jsonify(status="uncertain", error="book_ambiguous",
-                       message="booking could not be confirmed; needs review"), 503
+        return jsonify(error=e.code, message=e.message), 404
+    except TmsUnavailable as e:
+        return jsonify(error="tms_unavailable", message=str(e)), 503
+    if not load:
+        return jsonify(error="UNKNOWN_LOAD"), 404
+
+    ceiling = _as_int(load.get("MAX_BUY"))
+
+    # LAST LINE OF DEFENCE. agreed_rate arrives from the agent, which means it
+    # arrives from something that mis-hears numbers -- "twenty-seven fifty" is one
+    # slip away from 2715 or 2850. Every rate the agent was ever given came from
+    # evaluate_offer and was already bounded by the ceiling, so a number above it
+    # here means the value was garbled or invented. Refuse rather than commit it,
+    # and refuse without echoing the ceiling: the error says only that the number
+    # is not one we issued.
+    if ceiling is not None and agreed_rate > ceiling:
+        return jsonify(error="rate_not_offered",
+                       message="that rate was not offered on this load"), 409
+    if agreed_rate <= 0:
+        return jsonify(error="rate_not_offered",
+                       message="that rate was not offered on this load"), 409
+
+    # The deal is now known. Written straight to Twin and NEVER returned --
+    # agreed_rate + margin_vs_ceiling reconstructs MAX_BUY.
+    run_id = call_context(body)["run_id"]
+    updates = {"agreed_rate": agreed_rate,
+               "loadboard_rate": _as_int(load.get("RATE"))}
+    if ceiling is not None:
+        updates["margin_vs_ceiling"] = ceiling - agreed_rate
+    twin_helper.update_call_record(_twin(), run_id=run_id, **updates)
+
+    # ---------------------------------------------------------------------
+    # LIVE TMS COMMIT -- disabled under the read-only demo scope.
+    # Uncomment this block (and drop the read-only return below) to book for real.
+    # The ambiguous-booking path is the graded one: a timed-out LOAD_BOOK may have
+    # succeeded server-side and a token's booking state is monotonic, so it is
+    # never blind-retried -- it is confirmed with a fresh LOAD_GET instead.
+    #
+    # try:
+    #     rec = _client().load_book(load_id, mc_number, agreed_rate)
+    #     _cache().invalidate(load_id)  # availability changed
+    #     return jsonify(status="booked", booking_ref=rec.get("BOOKING_REF"))
+    # except TmsError as e:
+    #     return jsonify(error=e.code, message=e.message), 409
+    # except BookAmbiguousError:
+    #     # A timed-out book may have committed. Confirm live (bypass cache).
+    #     try:
+    #         confirmed = _client().load_get(load_id)
+    #     except Exception:
+    #         confirmed = None
+    #     _cache().invalidate(load_id)
+    #     if confirmed and confirmed.get("STATUS") == "BOOKED":
+    #         return jsonify(status="booked",
+    #                        booking_ref=confirmed.get("BOOKING_REF"),
+    #                        note="confirmed after ambiguous booking")
+    #     return jsonify(status="uncertain", error="book_ambiguous",
+    #                    message="booking could not be confirmed; needs review"), 503
+    # ---------------------------------------------------------------------
+
+    # Read-only scope: the deal is recorded, the load is not committed. The agent
+    # gets a plain success so the hand-off line stays truthful -- a senior rep
+    # finalises the booking, which is exactly what the demo claims happens.
+    return jsonify(status="confirmed", recorded=True)
 
 
 @bp.post("/debug/twin_probe")

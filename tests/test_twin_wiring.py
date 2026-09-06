@@ -229,6 +229,38 @@ def test_clarify_writes_no_margin(client):
     assert "margin_vs_ceiling" not in last
 
 
+def test_book_load_writes_the_deal_to_twin(client):
+    """book_load is the call that tells the server a deal happened. It is the only
+    place agreed_rate can be known for a booking that closed on a counter."""
+    r = client.post("/tools/book_load", headers=HEADERS, json={
+        "load_id": "LD00731", "mc_number": "872144",
+        "agreed_rate": 2750, "run_id": RUN})
+    assert r.status_code == 200
+    vals = client.twin.rows("update", "call_records")[-1][3]
+    assert vals["agreed_rate"] == 2750
+    assert vals["margin_vs_ceiling"] == 2802 - 2750
+    assert vals["loadboard_rate"] == 2600
+
+
+def test_book_load_never_returns_the_ceiling(client):
+    r = client.post("/tools/book_load", headers=HEADERS, json={
+        "load_id": "LD00731", "mc_number": "872144",
+        "agreed_rate": 2750, "run_id": RUN})
+    blob = json.dumps(r.get_json()).lower()
+    assert "max_buy" not in blob and "2802" not in blob and "margin" not in blob
+
+
+def test_book_load_above_ceiling_writes_nothing(client):
+    """A refused rate must leave no trace -- half-writing a rejected deal is worse
+    than not writing it."""
+    before = len(client.twin.rows("update", "call_records"))
+    r = client.post("/tools/book_load", headers=HEADERS, json={
+        "load_id": "LD00731", "mc_number": "872144",
+        "agreed_rate": 2803, "run_id": RUN})
+    assert r.status_code == 409
+    assert len(client.twin.rows("update", "call_records")) == before
+
+
 # --- 4. event_log mirroring ---------------------------------------------------
 
 def test_every_tool_call_lands_in_event_log(client):
